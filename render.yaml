@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: disposable-channel-bot
+    runtime: docker
+    plan: starter
+    region: singapore
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: CATEGORY_ID
+        sync: false
+      - key: TZ
+        value: Asia/Tokyo
+    healthCheckPath: /healthz

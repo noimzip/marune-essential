@@ -1,0 +1,16 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - GUILD_ID=${GUILD_ID}
+      - CATEGORY_ID=${CATEGORY_ID}
+      - PORT=8080
+      - TZ=Asia/Tokyo
+    env_file:
+      - .env
