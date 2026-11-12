@@ -83,7 +83,8 @@ export async function runLifecycleForGuild(
   result.createdChannelName = todayChannelName;
 
   // Filter text channels under the target category
-  const targetChannels = allChannels.filter(
+  const allChannelsList = Array.from(allChannels.values());
+  const targetChannels = allChannelsList.filter(
     (ch): ch is TextChannel =>
       ch !== null &&
       ch.parentId === categoryId &&
@@ -120,7 +121,7 @@ export async function runLifecycleForGuild(
   }
 
   // 2. Iterate through channels in category and manage past disposable channels
-  for (const [, channel] of targetChannels) {
+  for (const channel of targetChannels) {
     const diffDays = calculateDiffDays(channel.name, referenceDate);
 
     // Skip channels not matching naming scheme or created today / future

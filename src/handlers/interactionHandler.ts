@@ -1,0 +1,80 @@
+import {
+  Interaction,
+  PermissionFlagsBits,
+  TextChannel,
+} from 'discord.js';
+import { BUTTON_IDS } from '../services/channelManager.js';
+import { handleDailyBatchRun } from '../commands/dailyBatchRun.js';
+
+export async function handleInteraction(interaction: Interaction): Promise<void> {
+  try {
+    // 1. Handle Slash Commands
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'daily-batch-run') {
+        await handleDailyBatchRun(interaction);
+      }
+      return;
+    }
+
+    // 2. Handle Button Interactions
+    if (interaction.isButton()) {
+      const { customId, memberPermissions } = interaction;
+
+      if (
+        customId !== BUTTON_IDS.CONFIRM_DELETE &&
+        customId !== BUTTON_IDS.CANCEL_DELETE
+      ) {
+        return;
+      }
+
+      // Verify 'Manage Channels' permission
+      if (!memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+        await interaction.reply({
+          content: '❌ この操作を実行するには「チャンネルの管理」権限が必要です。',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (customId === BUTTON_IDS.CONFIRM_DELETE) {
+        const channel = interaction.channel;
+        if (!channel || !('delete' in channel)) {
+          await interaction.reply({
+            content: '⚠️ チャンネル情報を取得できませんでした。',
+            ephemeral: true,
+          });
+          return;
+        }
+
+        await interaction.reply({
+          content: '🗑️ チャンネルを削除しています...',
+          ephemeral: true,
+        });
+
+        try {
+          await (channel as TextChannel).delete(
+            `ユーザー承認による使い捨てチャンネル手動削除 (実行者: ${interaction.user.tag})`
+          );
+        } catch (err: any) {
+          console.error('[Button:Confirm] Error deleting channel:', err);
+          await interaction.followUp({
+            content: `⚠️ チャンネルの削除に失敗しました: ${err.message ?? err}`,
+            ephemeral: true,
+          });
+        }
+        return;
+      }
+
+      if (customId === BUTTON_IDS.CANCEL_DELETE) {
+        // Postpone: update message to remove buttons and note postponement
+        await interaction.update({
+          content: `⏸️ チャンネルの削除は保留されました。(担当者: <@${interaction.user.id}>)`,
+          components: [],
+        });
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('[InteractionHandler] Unhandled error in interaction handler:', error);
+  }
+}
