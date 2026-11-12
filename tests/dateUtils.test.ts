@@ -4,6 +4,8 @@ import {
   parseChannelName,
   calculateDiffDays,
   getJSTParts,
+  formatJSTDateSlash,
+  calculateElapsedDays,
 } from '../src/utils/dateUtils.js';
 
 describe('dateUtils', () => {
@@ -143,6 +145,42 @@ describe('dateUtils', () => {
 
     it('should return null for invalid channel name', () => {
       expect(calculateDiffDays('random-channel', refDate)).toBeNull();
+    });
+  });
+
+  describe('formatJSTDateSlash', () => {
+    it('should format date as YYYY/MM/DD in JST', () => {
+      // 2026-11-12T15:00:00Z is 2026-11-13 00:00:00 JST
+      const jstMidnight = new Date('2026-11-12T15:00:00Z');
+      expect(formatJSTDateSlash(jstMidnight)).toBe('2026/11/13');
+
+      const earlyYear = new Date('2026-01-05T03:00:00Z');
+      expect(formatJSTDateSlash(earlyYear)).toBe('2026/01/05');
+    });
+  });
+
+  describe('calculateElapsedDays', () => {
+    it('should calculate exact calendar day differences in JST', () => {
+      const ref = new Date('2026-11-12T15:00:00Z'); // 2026-11-13 00:00:00 JST
+
+      // Same JST calendar day (2026-11-13 00:05:00 JST)
+      expect(calculateElapsedDays(new Date('2026-11-12T15:05:00Z'), ref)).toBe(0);
+
+      // Previous JST calendar day (2026-11-12 23:59:00 JST -> 2026-11-12T14:59:00Z)
+      expect(calculateElapsedDays(new Date('2026-11-12T14:59:00Z'), ref)).toBe(1);
+
+      // 21 days ago (2026-10-23 JST)
+      expect(calculateElapsedDays(new Date('2026-10-23T12:00:00Z'), ref)).toBe(21);
+    });
+
+    it('should handle year and leap-year boundaries', () => {
+      const march1NonLeap = new Date('2025-02-28T15:00:00Z'); // 2025-03-01 JST
+      const feb8 = new Date('2025-02-08T00:00:00Z'); // 2025-02-08 JST
+      expect(calculateElapsedDays(feb8, march1NonLeap)).toBe(21);
+
+      const march1Leap = new Date('2024-02-29T15:00:00Z'); // 2024-03-01 JST
+      const feb9Leap = new Date('2024-02-09T00:00:00Z'); // 2024-02-09 JST
+      expect(calculateElapsedDays(feb9Leap, march1Leap)).toBe(21);
     });
   });
 });

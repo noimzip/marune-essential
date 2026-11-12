@@ -140,3 +140,30 @@ export function calculateDiffDays(
   const diffMs = refMid - candMid;
   return Math.round(diffMs / (24 * 60 * 60 * 1000));
 }
+
+/**
+ * Formats a Date into YYYY/MM/DD in JST (Asia/Tokyo).
+ */
+export function formatJSTDateSlash(date: Date): string {
+  const { year, month, day } = getJSTParts(date);
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}/${mm}/${dd}`;
+}
+
+/**
+ * Calculates elapsed calendar days in JST between targetDate and referenceDate.
+ * Same JST calendar day -> 0, yesterday -> 1, 21 days ago -> 21.
+ */
+export function calculateElapsedDays(
+  targetDate: Date,
+  referenceDate: Date = new Date()
+): number {
+  const targetParts = getJSTParts(targetDate);
+  const refParts = getJSTParts(referenceDate);
+
+  const targetMid = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day);
+  const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
+
+  return Math.round((refMid - targetMid) / (24 * 60 * 60 * 1000));
+}
