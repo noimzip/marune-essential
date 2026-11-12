@@ -79,6 +79,13 @@ export async function runLifecycleForGuild(
     throw new Error(`Target category '${categoryId}' not found or is not a category channel.`);
   }
 
+  const categoryPerms = category.permissionsFor?.(botMember);
+  if (categoryPerms && !categoryPerms.has(PermissionFlagsBits.ManageChannels)) {
+    throw new Error(
+      `Bot lacks 'Manage Channels' permission in category '${category.name}' (${categoryId}).`
+    );
+  }
+
   const todayChannelName = formatChannelName(referenceDate);
   result.createdChannelName = todayChannelName;
 
@@ -103,13 +110,19 @@ export async function runLifecycleForGuild(
       });
       result.created = true;
 
-      await newChannel.send({
-        content:
-          `📢 **本日の使い捨て会話チャンネルです** (#${todayChannelName})\n` +
-          `このチャンネルは毎日 00:00 (JST) に自動生成されます。\n` +
-          `作成から1〜6日経過時に削除確認メッセージが送信され、**7日経過で自動削除**されます。\n` +
-          `自由にご利用ください！`,
-      });
+      try {
+        await newChannel.send({
+          content:
+            `📢 **本日の使い捨て会話チャンネルです** (#${todayChannelName})\n` +
+            `このチャンネルは毎日 00:00 (JST) に自動生成されます。\n` +
+            `作成から1〜6日経過時に削除確認メッセージが送信され、**7日経過で自動削除**されます。\n` +
+            `自由にご利用ください！`,
+        });
+      } catch (msgErr: any) {
+        console.warn(
+          `[ChannelManager] Failed to send welcome message to #${todayChannelName}: ${msgErr.message}`
+        );
+      }
       console.log(`[ChannelManager] Created today channel: #${todayChannelName}`);
     } catch (err: any) {
       const errMsg = `Failed to create #${todayChannelName}: ${err.message}`;
@@ -122,7 +135,7 @@ export async function runLifecycleForGuild(
 
   // 2. Iterate through channels in category and manage past disposable channels
   for (const channel of targetChannels) {
-    const diffDays = calculateDiffDays(channel.name, referenceDate);
+    const diffDays = calculateDiffDays(channel.name, referenceDate, channel.createdAt);
 
     // Skip channels not matching naming scheme or created today / future
     if (diffDays === null || diffDays <= 0) {

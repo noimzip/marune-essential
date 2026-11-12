@@ -45,6 +45,41 @@ describe('channelManager (runLifecycleForGuild)', () => {
     );
   });
 
+  it('throws error if bot lacks ManageChannels permission in the target category', async () => {
+    const mockGuild: any = {
+      name: 'Test Guild',
+      id: 'guild-1',
+      members: {
+        me: {
+          permissions: {
+            has: vi.fn().mockReturnValue(true),
+          },
+        },
+      },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(
+          new Map([
+            [
+              categoryId,
+              {
+                id: categoryId,
+                name: 'テキストチャンネル',
+                type: ChannelType.GuildCategory,
+                permissionsFor: vi.fn().mockReturnValue({
+                  has: vi.fn().mockReturnValue(false),
+                }),
+              },
+            ],
+          ])
+        ),
+      },
+    };
+
+    await expect(runLifecycleForGuild(mockGuild, categoryId, refDate)).rejects.toThrow(
+      /Bot lacks 'Manage Channels' permission in category 'テキストチャンネル'/
+    );
+  });
+
   it('creates today channel, sends confirm to 1-6 day channels, and deletes 7+ day channels', async () => {
     const mockSend = vi.fn().mockResolvedValue({});
     const mockDelete = vi.fn().mockResolvedValue({});

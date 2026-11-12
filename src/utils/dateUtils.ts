@@ -40,12 +40,12 @@ export function formatChannelName(date: Date = new Date()): string {
 /**
  * Parses channel name to extract month and day.
  * Matches:
- *  - 使い捨て会話_MM月DD日 (e.g. 使い捨て会話_11月12日, 使い捨て会話_01月05日)
- *  - 使い捨て会話_M月D日 (e.g. 使い捨て会話_1月5日)
+ *  - 使い捨て会話_MM月DD日 or 使い捨て会話-MM月DD日 (e.g. 使い捨て会話_11月12日, 使い捨て会話_01月05日)
+ *  - 使い捨て会話_M月D日 or 使い捨て会話-M月D日 (e.g. 使い捨て会話_1月5日)
  * Returns null if the name does not match or represents an invalid month/day.
  */
 export function parseChannelName(channelName: string): { month: number; day: number } | null {
-  const match = channelName.match(/^使い捨て会話_(\d{1,2})月(\d{1,2})日$/);
+  const match = channelName.match(/^使い捨て会話[_-](\d{1,2})月(\d{1,2})日$/);
   if (!match) {
     return null;
   }
@@ -60,6 +60,8 @@ export function parseChannelName(channelName: string): { month: number; day: num
   return { month, day };
 }
 
+const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+
 /**
  * Calculates the elapsed days between the channel's date and the reference date (in JST).
  *
@@ -70,12 +72,14 @@ export function parseChannelName(channelName: string): { month: number; day: num
  *  - 7 days ago: 7
  *  - Future dates: negative (e.g. -1)
  *
+ * Supports optional channelCreatedAt to resolve the exact year directly from Discord channel metadata.
  * Handles year boundaries (e.g. Reference is Jan 2027, channel is Dec 31).
  * Returns null if channel name cannot be parsed.
  */
 export function calculateDiffDays(
   channelInput: string | { month: number; day: number },
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  channelCreatedAt?: Date
 ): number | null {
   let parsed: { month: number; day: number } | null;
   if (typeof channelInput === 'string') {
@@ -91,18 +95,43 @@ export function calculateDiffDays(
   const { month, day } = parsed;
   const refParts = getJSTParts(referenceDate);
 
-  // Check candidate year in reference year
   let candidateYear = refParts.year;
 
-  // Handle year-boundary rollover (e.g. today is January/February, channel was created in November/December of previous year)
-  if (refParts.month <= 2 && month >= 11) {
-    candidateYear = refParts.year - 1;
+  if (channelCreatedAt) {
+    const createdParts = getJSTParts(channelCreatedAt);
+    // If created late Dec for Jan 1st channel
+    if (createdParts.month === 12 && month === 1) {
+      candidateYear = createdParts.year + 1;
+    } else if (createdParts.month === 1 && month === 12) {
+      candidateYear = createdParts.year - 1;
+    } else {
+      candidateYear = createdParts.year;
+    }
+  } else {
+    // If no channelCreatedAt provided (e.g. in unit tests or string inputs),
+    // check if candidate date in the reference year is > 14 days in the future.
+    // A disposable channel is never scheduled more than 14 days in advance,
+    // so any date > 14 days ahead belongs to the previous year.
+    let candYear = refParts.year;
+    if (month === 2 && day === 29 && !isLeapYear(candYear) && isLeapYear(candYear - 1)) {
+      candYear -= 1;
+    }
+    const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
+    const candMidCurrentYear = Date.UTC(candYear, month - 1, day);
+    const diffCurrentYear = Math.round((refMid - candMidCurrentYear) / (24 * 60 * 60 * 1000));
+
+    if (diffCurrentYear < -14) {
+      candidateYear = refParts.year - 1;
+    } else {
+      candidateYear = refParts.year;
+    }
   }
 
-  // Handle leap year check: if Feb 29 in a non-leap candidate year, it might be from a leap year
-  const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
-  if (month === 2 && day === 29 && !isLeapYear(candidateYear) && isLeapYear(candidateYear - 1)) {
-    candidateYear -= 1;
+  // Handle Feb 29 leap year check for candidateYear
+  if (month === 2 && day === 29 && !isLeapYear(candidateYear)) {
+    if (isLeapYear(candidateYear - 1)) {
+      candidateYear -= 1;
+    }
   }
 
   const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);

@@ -113,6 +113,70 @@ describe('interactionHandler', () => {
       );
     });
 
+    it('fetches uncached channel by channelId and deletes it', async () => {
+      const mockChannelDelete = vi.fn().mockResolvedValue({});
+      const fetchedChannel = {
+        id: 'ch-uncached-1',
+        delete: mockChannelDelete,
+      };
+
+      const mockInteraction: any = {
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: BUTTON_IDS.CONFIRM_DELETE,
+        channel: null, // Uncached channel
+        channelId: 'ch-uncached-1',
+        guild: {
+          channels: {
+            fetch: vi.fn().mockResolvedValue(fetchedChannel),
+          },
+        },
+        memberPermissions: {
+          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
+        },
+        user: { username: 'AdminUser' },
+        reply: vi.fn().mockResolvedValue({}),
+      };
+
+      await handleInteraction(mockInteraction);
+
+      expect(mockInteraction.guild.channels.fetch).toHaveBeenCalledWith('ch-uncached-1');
+      expect(mockChannelDelete).toHaveBeenCalled();
+    });
+
+    it('handles permission denied error (50013) on channel delete', async () => {
+      const mockChannelDelete = vi.fn().mockRejectedValue({
+        code: 50013,
+        message: 'Missing Permissions',
+      });
+
+      const mockInteraction: any = {
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: BUTTON_IDS.CONFIRM_DELETE,
+        custom_id: BUTTON_IDS.CONFIRM_DELETE,
+        channel: {
+          delete: mockChannelDelete,
+        },
+        memberPermissions: {
+          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
+        },
+        user: { username: 'AdminUser' },
+        reply: vi.fn().mockResolvedValue({}),
+        followUp: vi.fn().mockResolvedValue({}),
+        replied: true,
+      };
+
+      await handleInteraction(mockInteraction);
+
+      expect(mockInteraction.followUp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('Botにこのチャンネルを削除する権限'),
+          ephemeral: true,
+        })
+      );
+    });
+
     it('postpones deletion on cancel button when authorized', async () => {
       const mockInteraction: any = {
         isChatInputCommand: () => false,

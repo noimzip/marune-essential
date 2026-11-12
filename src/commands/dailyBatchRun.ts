@@ -51,8 +51,16 @@ export async function handleDailyBatchRun(
     });
   } catch (error: any) {
     console.error('[Command:daily-batch-run] Error running daily lifecycle:', error);
-    await interaction.editReply({
-      content: `⚠️ バッチ実行中にエラーが発生しました: ${error.message ?? error}`,
-    });
+    const errorContent = `⚠️ バッチ実行中にエラーが発生しました: ${error.message ?? error}`;
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: errorContent,
+      });
+    } else {
+      await interaction.reply({
+        content: errorContent,
+        ephemeral: true,
+      });
+    }
   }
 }

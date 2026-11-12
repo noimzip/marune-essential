@@ -35,8 +35,14 @@ describe('dateUtils', () => {
       expect(parseChannelName('使い捨て会話_01月05日')).toEqual({ month: 1, day: 5 });
     });
 
+    it('should parse valid channel names with hyphen instead of underscore', () => {
+      expect(parseChannelName('使い捨て会話-11月12日')).toEqual({ month: 11, day: 12 });
+      expect(parseChannelName('使い捨て会話-01月05日')).toEqual({ month: 1, day: 5 });
+    });
+
     it('should parse valid channel names with 1 digit', () => {
       expect(parseChannelName('使い捨て会話_1月5日')).toEqual({ month: 1, day: 5 });
+      expect(parseChannelName('使い捨て会話-1月5日')).toEqual({ month: 1, day: 5 });
     });
 
     it('should return null for non-matching or invalid channel names', () => {
@@ -106,6 +112,28 @@ describe('dateUtils', () => {
       const nonLeapRef = new Date('2025-02-28T15:00:00Z');
       expect(calculateDiffDays('使い捨て会話_03月01日', nonLeapRef)).toBe(0);
       expect(calculateDiffDays('使い捨て会話_02月28日', nonLeapRef)).toBe(1);
+    });
+
+    it('should handle year boundary rollover across multiple months without arbitrary cutoffs', () => {
+      // Reference: 2026-03-01 00:00:00 JST
+      const march1 = new Date('2026-02-28T15:00:00Z');
+      expect(calculateDiffDays('使い捨て会話_12月28日', march1)).toBe(63);
+
+      // Reference: 2026-01-05 00:00:00 JST
+      const jan5 = new Date('2026-01-04T15:00:00Z');
+      expect(calculateDiffDays('使い捨て会話_10月30日', jan5)).toBe(67);
+    });
+
+    it('should accurately resolve channel year when channelCreatedAt is provided', () => {
+      // Reference: 2026-11-12 12:00:00 JST
+      // Channel named 11月10日, but created 1 year ago (2025-11-10)
+      const createdAtOneYearAgo = new Date('2025-11-10T03:00:00Z');
+      expect(calculateDiffDays('使い捨て会話_11月10日', refDate, createdAtOneYearAgo)).toBe(367);
+
+      // Channel created on Dec 31, 2025 for Jan 1, 2026
+      const createdDec31 = new Date('2025-12-31T15:00:00Z');
+      const jan2Ref = new Date('2026-01-02T03:00:00Z');
+      expect(calculateDiffDays('使い捨て会話_01月01日', jan2Ref, createdDec31)).toBe(1);
     });
 
     it('should return negative values for future dates', () => {

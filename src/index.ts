@@ -64,7 +64,10 @@ async function main() {
   });
 
   // 3. Graceful shutdown handler
+  let isShuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
     console.log(`[App] Received ${signal}. Initiating graceful shutdown...`);
 
     if (cronJob) {
