@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { runLifecycleForGuild, BUTTON_IDS } from '../src/services/channelManager.js';
 
 describe('channelManager (runLifecycleForGuild)', () => {
@@ -182,8 +182,12 @@ describe('channelManager (runLifecycleForGuild)', () => {
     ]);
     expect(mockSend).toHaveBeenCalledTimes(3); // 1 for new welcome msg + 2 for confirm prompts
 
+    // Verify welcome & confirmation messages suppress notifications
+    expect(mockSend.mock.calls[0][0].flags).toEqual([MessageFlags.SuppressNotifications]);
+
     // Verify confirmation message buttons
     const confirmCallArgs = mockSend.mock.calls[1][0];
+    expect(confirmCallArgs.flags).toEqual([MessageFlags.SuppressNotifications]);
     expect(confirmCallArgs.components[0].components[0].data.custom_id).toBe(
       BUTTON_IDS.CONFIRM_DELETE
     );

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ChannelFlags, ChannelType, PermissionFlagsBits } from 'discord.js';
+import {
+  ChannelFlags,
+  ChannelType,
+  MessageFlags,
+  PermissionFlagsBits,
+} from 'discord.js';
 import {
   runForumCleanupForGuild,
   FORUM_BUTTON_IDS,
@@ -46,12 +51,13 @@ describe('forumManager (runForumCleanupForGuild)', () => {
 
   it('detects 21+ day inactive threads across active and paginated archived, skips pinned and excluded', async () => {
     const mockSendActiveOld = vi.fn().mockResolvedValue({});
+    const mockSetArchivedActive = vi.fn().mockResolvedValue({});
     const mockSendArchivedOld = vi.fn().mockResolvedValue({});
     const mockSetArchived = vi.fn().mockResolvedValue({});
     const mockSendRecent = vi.fn().mockResolvedValue({});
     const mockSendPinned = vi.fn().mockResolvedValue({});
 
-    // Active thread: 22 days inactive -> should send confirm
+    // Active thread: 22 days inactive -> should send confirm and close thread
     const activeOldThread: any = {
       id: 'th-active-old',
       name: 'old-active-topic',
@@ -66,6 +72,7 @@ describe('forumManager (runForumCleanupForGuild)', () => {
           ])
         ),
       },
+      setArchived: mockSetArchivedActive,
       send: mockSendActiveOld,
     };
 
@@ -206,17 +213,28 @@ describe('forumManager (runForumCleanupForGuild)', () => {
       'th-active-old',
       'th-arch-old',
     ]);
-    expect(mockSetArchived).toHaveBeenCalledWith(
+    expect(mockSetArchived).toHaveBeenNthCalledWith(
+      1,
       false,
       expect.stringContaining('アーカイブ一時解除')
+    );
+    expect(mockSetArchived).toHaveBeenNthCalledWith(
+      2,
+      true,
+      expect.stringContaining('自動クローズ')
+    );
+    expect(mockSetArchivedActive).toHaveBeenCalledWith(
+      true,
+      expect.stringContaining('自動クローズ')
     );
     expect(mockSendActiveOld).toHaveBeenCalledTimes(1);
     expect(mockSendArchivedOld).toHaveBeenCalledTimes(1);
     expect(mockSendPinned).not.toHaveBeenCalled();
     expect(mockSendRecent).not.toHaveBeenCalled();
 
-    // Verify buttons & content
+    // Verify buttons, silent flags & content
     const sendArg = mockSendActiveOld.mock.calls[0][0];
+    expect(sendArg.flags).toEqual([MessageFlags.SuppressNotifications]);
     expect(sendArg.content).toContain(FORUM_CONFIRM_MARKER);
     expect(sendArg.content).toContain('22日経過');
     expect(sendArg.components[0].components[0].data.custom_id).toBe(

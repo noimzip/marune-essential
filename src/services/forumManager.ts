@@ -9,6 +9,7 @@ import {
   ForumChannel,
   Guild,
   Message,
+  MessageFlags,
   PermissionFlagsBits,
   ThreadChannel,
 } from 'discord.js';
@@ -274,7 +275,19 @@ async function sendConfirmationToThread(
       `最後の投稿から **${thresholdDays}日以上**（最終投稿: \`${lastPostDateStr}\`・\`${elapsedDays}日経過\`）が経過しています。\n` +
       `不要なトピックであれば、「チャンネルの管理」権限を持つメンバーが下のボタンを押して削除を承認してください。`,
     components: [row],
+    flags: [MessageFlags.SuppressNotifications],
   });
+
+  // Close (archive) the thread after sending the confirmation prompt
+  if (typeof thread.setArchived === 'function') {
+    try {
+      await thread.setArchived(true, '削除確認メッセージ送信後の自動クローズ');
+    } catch (archiveErr: any) {
+      console.warn(
+        `[ForumManager] Could not archive thread #${thread.name} after sending confirmation: ${archiveErr.message}`
+      );
+    }
+  }
 }
 
 /**

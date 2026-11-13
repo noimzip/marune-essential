@@ -5,6 +5,7 @@ import {
   ChannelType,
   Client,
   Guild,
+  MessageFlags,
   NewsChannel,
   PermissionFlagsBits,
   TextChannel,
@@ -117,6 +118,7 @@ export async function runLifecycleForGuild(
             `このチャンネルは毎日 00:00 (JST) に自動生成されます。\n` +
             `作成から1〜6日経過時に削除確認メッセージが送信され、**7日経過で自動削除**されます。\n` +
             `自由にご利用ください！`,
+          flags: [MessageFlags.SuppressNotifications],
         });
       } catch (msgErr: any) {
         console.warn(
@@ -184,6 +186,7 @@ export async function runLifecycleForGuild(
             `手動で削除したい場合は下のボタンを押してください。\n` +
             `*(※作成から7日経過すると自動削除されます。実行には「チャンネルの管理」権限が必要です)*`,
           components: [row],
+          flags: [MessageFlags.SuppressNotifications],
         });
 
         console.log(
