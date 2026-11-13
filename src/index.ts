@@ -8,6 +8,7 @@ import { startHealthServer } from './server.js';
 import { startDailyScheduler } from './scheduler.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
 import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
+import { testForumCleanupCommand } from './commands/testForumCleanup.js';
 import type { Cron } from 'croner';
 import type { Server } from 'node:http';
 
@@ -40,9 +41,12 @@ async function main() {
     try {
       const guild = await readyClient.guilds.fetch(config.GUILD_ID);
       if (guild) {
-        await guild.commands.set([dailyBatchRunCommand.toJSON()]);
+        await guild.commands.set([
+          dailyBatchRunCommand.toJSON(),
+          testForumCleanupCommand.toJSON(),
+        ]);
         console.log(
-          `[App] Successfully registered /daily-batch-run command in guild '${guild.name}' (${guild.id})`
+          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup) in guild '${guild.name}' (${guild.id})`
         );
       } else {
         console.warn(`[App] Guild ${config.GUILD_ID} not found. Skipping slash command registration.`);
