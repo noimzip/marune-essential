@@ -108,6 +108,7 @@ async function handleDisposableChannelButton(
       await interaction.update({
         content: `⏸️ チャンネルの削除は保留されました。(担当者: <@${interaction.user.id}>)`,
         components: [],
+        allowedMentions: { parse: [] },
       });
     } catch (updateErr: any) {
       console.error('[Button:Cancel] Failed to update message:', updateErr);
@@ -159,22 +160,55 @@ async function handleForumThreadButton(
     });
 
     const executorTag = interaction.user.tag ?? interaction.user.username;
+    const auditReason = `長期未更新フォーラムトピック削除承認 (承認者: ${executorTag})`;
     try {
-      await (channel as ThreadChannel).delete(
-        `長期未更新フォーラムトピック削除承認 (承認者: ${executorTag})`
-      );
+      await (channel as ThreadChannel).delete(auditReason);
     } catch (err: any) {
+      if (err?.code === 50083 && typeof channel.setArchived === 'function') {
+        try {
+          await channel.setArchived(false, 'トピック削除のためアーカイブ解除');
+          await (channel as ThreadChannel).delete(auditReason);
+          return;
+        } catch (retryErr: any) {
+          await replyDeleteError(interaction, retryErr, '[ForumButton:Confirm]', 'トピック');
+          return;
+        }
+      }
       await replyDeleteError(interaction, err, '[ForumButton:Confirm]', 'トピック');
     }
     return;
   }
 
   if (customId === FORUM_BUTTON_IDS.CANCEL_KEEP) {
+    const wasArchived = Boolean(channel.archived);
+    if (wasArchived && typeof channel.setArchived === 'function') {
+      try {
+        await channel.setArchived(false, '見送り処理のためアーカイブ一時解除');
+      } catch (unarchiveErr: any) {
+        console.warn(
+          '[ForumButton:Keep] Could not unarchive thread before updating message:',
+          unarchiveErr
+        );
+      }
+    }
+
     try {
       await interaction.update({
         content: `${FORUM_KEEP_MARKER}（承認者: <@${interaction.user.id}>）`,
         components: [],
+        allowedMentions: { parse: [] },
       });
+
+      if (wasArchived && typeof channel.setArchived === 'function') {
+        try {
+          await channel.setArchived(true, '見送り処理完了後の再クローズ');
+        } catch (rearchiveErr: any) {
+          console.warn(
+            '[ForumButton:Keep] Could not re-archive thread after keep update:',
+            rearchiveErr
+          );
+        }
+      }
     } catch (updateErr: any) {
       console.error('[ForumButton:Keep] Failed to update message:', updateErr);
       if (!interaction.replied && !interaction.deferred) {

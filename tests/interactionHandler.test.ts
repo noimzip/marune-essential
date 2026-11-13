@@ -403,5 +403,81 @@ describe('interactionHandler', () => {
         })
       );
     });
+
+    it('temporarily unarchives and re-closes an archived thread on keep button', async () => {
+      const mockSetArchived = vi.fn().mockResolvedValue({});
+      const mockUpdate = vi.fn().mockResolvedValue({});
+      const mockInteraction: any = {
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: FORUM_BUTTON_IDS.CANCEL_KEEP,
+        channel: {
+          isThread: () => true,
+          archived: true,
+          parent: { type: ChannelType.GuildForum },
+          setArchived: mockSetArchived,
+        },
+        memberPermissions: {
+          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
+        },
+        user: { id: 'user-777' },
+        update: mockUpdate,
+      };
+
+      await handleInteraction(mockInteraction);
+
+      expect(mockSetArchived).toHaveBeenNthCalledWith(
+        1,
+        false,
+        expect.stringContaining('一時解除')
+      );
+      expect(mockUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining(FORUM_KEEP_MARKER),
+          components: [],
+          allowedMentions: { parse: [] },
+        })
+      );
+      expect(mockSetArchived).toHaveBeenNthCalledWith(
+        2,
+        true,
+        expect.stringContaining('再クローズ')
+      );
+    });
+
+    it('unarchives and retries deletion if thread delete returns 50083 (Thread is archived)', async () => {
+      const mockSetArchived = vi.fn().mockResolvedValue({});
+      const mockThreadDelete = vi
+        .fn()
+        .mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' })
+        .mockResolvedValueOnce({});
+
+      const mockInteraction: any = {
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: FORUM_BUTTON_IDS.CONFIRM_DELETE,
+        channel: {
+          id: 'th-archived',
+          isThread: () => true,
+          archived: true,
+          parent: { type: ChannelType.GuildForum },
+          setArchived: mockSetArchived,
+          delete: mockThreadDelete,
+        },
+        memberPermissions: {
+          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
+        },
+        user: { tag: 'Moderator#0001' },
+        reply: vi.fn().mockResolvedValue({}),
+      };
+
+      await handleInteraction(mockInteraction);
+
+      expect(mockSetArchived).toHaveBeenCalledWith(
+        false,
+        expect.stringContaining('アーカイブ解除')
+      );
+      expect(mockThreadDelete).toHaveBeenCalledTimes(2);
+    });
   });
 });
