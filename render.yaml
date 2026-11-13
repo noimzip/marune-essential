@@ -11,6 +11,10 @@ services:
         sync: false
       - key: CATEGORY_ID
         sync: false
+      - key: EXCLUDED_FORUM_IDS
+        value: ""
+      - key: FORUM_INACTIVE_DAYS
+        value: "21"
       - key: TZ
         value: Asia/Tokyo
     healthCheckPath: /healthz

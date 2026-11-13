@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Discordサーバー内の指定カテゴリ（`CATEGORY_ID`）配下で、日替わりチャンネル（`使い捨て会話_MM月DD日`）の生成・削除確認・7日経過自動削除を行う 24/7 常時稼働 Discord Bot（TypeScript / discord.js v14）。
+Discordサーバー内の指定カテゴリ（`CATEGORY_ID`）配下で日替わりチャンネル（`使い捨て会話_MM月DD日`）のライフサイクル管理を行い、あわせてサーバー内のフォーラムチャンネルで長期間（21日以上）更新のないトピックの削除確認・承認削除を行う 24/7 常時稼働 Discord Bot（TypeScript / discord.js v14）。
 
 ## Verification
 
@@ -19,7 +19,8 @@ npm run build  # tsc による型チェックと dist/ ビルド (src/**/* の�
 - **環境変数スキーマ (Zod)**: `src/config.ts`
 - **毎日 00:00 JST 定期バッチ**: `src/scheduler.ts`（`croner` で `0 0 0 * * *` / `Asia/Tokyo`）
 - **チャンネル生成・経過判定・削除のコア**: `src/services/channelManager.ts`
-- **スラッシュコマンド・ボタン押下処理**: `src/handlers/interactionHandler.ts`, `src/commands/dailyBatchRun.ts`
+- **フォーラム長期未更新トピック検出・確認送信**: `src/services/forumManager.ts`
+- **スラッシュコマンド・ボタン押下処理**: `src/handlers/interactionHandler.ts`, `src/commands/dailyBatchRun.ts`, `src/commands/testForumCleanup.ts`
 - **JST日付変換・チャンネル名パース・差分日数計算**: `src/utils/dateUtils.ts`
 - **クラウド死活監視 HTTP サーバー**: `src/server.ts`
 - **デプロイ・インフラ連動設定**: `Dockerfile`, `docker-compose.yml`, `railway.json`, `render.yaml`, `.env.example`
@@ -39,16 +40,22 @@ npm run build  # tsc による型チェックと dist/ ビルド (src/**/* の�
   - Discord の `channel.createdAt` がある場合は作成年（12月作成の1月チャンネル等の境界補正含む）を優先する。
   - `channelCreatedAt` 省略時は「基準日から14日以上未来になる日付は前年とみなす」ヒューリスティックを用いる（2/29 のうるう年補正あり）。安易に特定の月（例: `<= 2`）で分岐を切らないこと。
 
-### 3. ライフサイクルと権限境界 (`src/services/channelManager.ts`, `src/handlers/interactionHandler.ts`)
-- **テスト分離構造**: `runDailyLifecycle(client)` は `getConfig()` から `GUILD_ID`/`CATEGORY_ID` を解決する薄いラッパーであり、コアロジックは config 非依存の `runLifecycleForGuild(guild, categoryId, referenceDate)` に置く。テストや新機能追加時はこの分離を維持する。
-- **Bot 自身の二重権限チェック**: `runLifecycleForGuild` はギルド全体の `ManageChannels` に加え、`category.permissionsFor(botMember)` でカテゴリ固有の上書き権限も事前検証する。
-- **ボタンの永続化と固定 `customId`**: 再起動後のメッセージからも操作できるよう、ボタン識別子は `BUTTON_IDS`（`disposable_channel_delete_confirm`, `disposable_channel_delete_cancel`）の固定文字列とし、ステートレスに `interactionCreate` で処理する。この ID を変更すると既存メッセージのボタンが動作不能になる。
-- **未キャッシュチャンネルと実行者権限**: ボタン押下時は `memberPermissions?.has(PermissionFlagsBits.ManageChannels)` を検証し、`interaction.channel` が `null`（再起動直後など）の場合は `guild.channels.fetch(channelId)` → `client.channels.fetch(channelId)` へフォールバックする。
-- **既知のエラーコード分岐**: 削除失敗時は Discord API エラーコード `50013`（権限不足）と `10003`（削除済みチャンネル）を判別して日本語メッセージを返す。
+### 3. ライフサイクルと権限境界 (`src/services/channelManager.ts`, `src/services/forumManager.ts`, `src/handlers/interactionHandler.ts`)
+- **テスト分離構造**: `runDailyLifecycle(client)` / `runForumCleanup(client)` は `getConfig()` を解決する薄いラッパーであり、コアロジックは config 非依存の `runLifecycleForGuild` / `runForumCleanupForGuild` に置く。テストや新機能追加時はこの分離を維持する。
+- **Bot 自身の権限チェック**:
+  - 日替わりチャンネル（`runLifecycleForGuild`）: ギルド全体の `ManageChannels` に加え、`category.permissionsFor(botMember)` でカテゴリ固有の上書き権限を事前検証する。
+  - フォーラム（`runForumCleanupForGuild`）: フォーラムごとに `ViewChannel`, `ManageThreads`, `SendMessagesInThreads`, `ReadMessageHistory` を検証し、権限不足のフォーラムのみ `errors` に記録して他フォーラムを続行する。
+- **ボタンの永続化と固定 `customId`**: 再起動後のメッセージからも操作できるよう、日替わり用は `BUTTON_IDS`（`disposable_channel_delete_confirm`, `disposable_channel_delete_cancel`）、フォーラム用は `FORUM_BUTTON_IDS`（`forum_thread_delete_confirm`, `forum_thread_delete_keep`）の固定文字列でステートレスに処理する。これらの ID を変更すると既存メッセージのボタンが動作不能になる。
+- **フォーラムのピン留め・Botメッセージ除外・アーカイブ取得 (`src/services/forumManager.ts`)**:
+  - `thread.flags?.has(ChannelFlags.Pinned)` は誤削除防止のため必ずスキップする。
+  - 最終投稿日時は `classifyForumBotMessage` で Bot 自身の削除確認・見送りメッセージを除外した上で算出する（メッセージ0件時は `thread.createdAt` フォールバック）。確認送信済み、または見送り編集から猶予期間（`Math.max(1, thresholdDays)` 日）未満の場合は再送信をスキップする。
+  - 21日以上前のスレッドは多くがアーカイブ済みのため、アクティブスレッド一括取得に加え `fetchArchived` を `hasMore` ループでページネーションして全件取得する。送信時 `thread.archived === true` の場合は `setArchived(false)` 後に送信する。
+- **未キャッシュチャンネルと実行者権限**: ボタン押下時は `memberPermissions?.has(PermissionFlagsBits.ManageChannels)` を検証し、`interaction.channel` が `null`（再起動直後など）の場合は `guild.channels.fetch(channelId)` → `client.channels.fetch(channelId)` へフォールバックする。フォーラム用ボタンでは対象がフォーラム配下のスレッドであることも検証する。
+- **既知のエラーコード分岐**: 削除失敗時は Discord API エラーコード `50013`（権限不足）と `10003`（削除済みチャンネル/スレッド）を判別して日本語メッセージを返す。
 
 ### 4. 設定とコマンド登録 (`src/config.ts`, `src/index.ts`)
 - **遅延設定パース**: `src/config.ts` は `getConfig()` 初回呼び出し時に `process.env` を Zod 検証してキャッシュする。テストでモジュールをインポートしただけでクラッシュしないよう、トップレベルで `getConfig()` を呼ばないこと（注入には `setConfig()` を使う）。
-- **ギルドコマンドの一括置換**: `ClientReady` 時に `guild.commands.set([dailyBatchRunCommand.toJSON()])` でコマンドを上書き登録している。スラッシュコマンドを増やす場合はこの配列に追加する。
+- **ギルドコマンドの一括置換**: `ClientReady` 時に `guild.commands.set([dailyBatchRunCommand.toJSON(), testForumCleanupCommand.toJSON()])` でコマンドを上書き登録している。スラッシュコマンドを増やす場合はこの配列に追加する。
 
 ### 5. 24/7 クラウド稼働契約 (`src/server.ts`, インフラ設定)
 - **ヘルスチェック仕様**: `railway.json` と `render.yaml` は `/healthz`（`PORT` デフォルト `8080`、`0.0.0.0` リッスン）を監視する。`client.isReady()` が `true` のとき HTTP `200`、起動中・未接続時は `503` を返す契約を維持する。

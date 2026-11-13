@@ -14,9 +14,13 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
 3. **作成から7日経過チャンネルの自動削除**
    - 作成から7日以上経過したチャンネルを毎朝0:00の定期バッチで自動削除。
 4. **即時実行スラッシュコマンド (`/daily-batch-run`)**
-   - 管理者向けに定期バッチを即時テスト・実行できるスラッシュコマンドを提供。
+   - 管理者向けに使い捨て会話の定期バッチを即時テスト・実行できるスラッシュコマンドを提供。
    - 起動時にギルド個別登録（Instant Guild Command Registration）を行うため、起動直後から即時反映。
-5. **クラウド常時稼働対応 (24/7)**
+5. **長期未更新フォーラムトピック削除管理機能 (`/test_forum_cleanup`)**
+   - サーバー内のフォーラムチャンネル（`EXCLUDED_FORUM_IDS` で除外設定可能）において、最後の投稿から21日以上経過したトピック（ピン留め除く・アーカイブ済み含む）を毎日 0:00 JST に検出し、削除確認ボタン（承認削除 `forum_thread_delete_confirm` / 残す `forum_thread_delete_keep`）を送信。
+   - Bot自身が送信した確認/見送りメッセージは最終投稿判定から除外。
+   - テスト用スラッシュコマンド `/test_forum_cleanup [days] [dry_run]` で基準日数やドライランを指定して検証可能。
+6. **クラウド常時稼働対応 (24/7)**
    - 死活監視エンドポイント `/healthz`（HTTP 200/503 & ステータスJSON返却）を内蔵。
    - Dockerマルチステージビルド・軽量Alpineイメージ。
    - 日本標準時（`TZ=Asia/Tokyo`）完全対応（月跨ぎ・年跨ぎ・うるう年計算対応）。
@@ -30,7 +34,9 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
 - **Discord Bot Token**: Discord Developer Portalより取得
 - **Discord Bot 権限 (Bot Permissions)**:
   - `Manage Channels` (チャンネルの管理)
+  - `Manage Threads` (スレッドの管理)
   - `Send Messages` (メッセージを送信)
+  - `Send Messages in Threads` (スレッド内でメッセージを送信)
   - `View Channels` (チャンネルを見る)
   - `Read Message History` (メッセージ履歴を読む)
 
@@ -64,6 +70,12 @@ GUILD_ID=123456789012345678
 
 # 対象カテゴリID (「テキストチャンネル」カテゴリ)
 CATEGORY_ID=123456789012345678
+
+# 削除確認対象から除外するフォーラムチャンネルID (カンマ区切り・任意)
+EXCLUDED_FORUM_IDS=
+
+# フォーラムトピックの未更新判定日数 (デフォルト: 21)
+FORUM_INACTIVE_DAYS=21
 
 # ヘルスチェックHTTPポート (デフォルト: 8080)
 PORT=8080
@@ -145,16 +157,19 @@ marune-essential/
 │   ├── scheduler.ts            # 毎日 00:00 JST 定期タスク (croner)
 │   ├── server.ts               # 死活監視エンドポイント (/healthz)
 │   ├── services/
-│   │   └── channelManager.ts   # チャンネルライフサイクル管理（生成・確認・7日削除）
+│   │   ├── channelManager.ts   # チャンネルライフサイクル管理（生成・確認・7日削除）
+│   │   └── forumManager.ts     # フォーラムトピック長期未更新検出・確認送信
 │   ├── handlers/
 │   │   └── interactionHandler.ts # スラッシュコマンド・ボタンインタラクション処理
 │   ├── commands/
-│   │   └── dailyBatchRun.ts    # /daily-batch-run コマンド定義
+│   │   ├── dailyBatchRun.ts    # /daily-batch-run コマンド定義
+│   │   └── testForumCleanup.ts # /test_forum_cleanup コマンド定義
 │   └── utils/
 │       └── dateUtils.ts        # JST日付処理・差分日数判定・年跨ぎ/うるう年対応
 └── tests/
     ├── dateUtils.test.ts       # 日付ユーティリティのユニットテスト
     ├── channelManager.test.ts  # チャンネルライフサイクルのテスト
+    ├── forumManager.test.ts    # フォーラムトピック管理のテスト
     ├── interactionHandler.test.ts # インタラクション＆権限検証テスト
     └── server.test.ts          # /healthz サーバーのテスト
 ```

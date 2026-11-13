@@ -10,6 +10,8 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - GUILD_ID=${GUILD_ID}
       - CATEGORY_ID=${CATEGORY_ID}
+      - EXCLUDED_FORUM_IDS=${EXCLUDED_FORUM_IDS:-}
+      - FORUM_INACTIVE_DAYS=${FORUM_INACTIVE_DAYS:-21}
       - PORT=8080
       - TZ=Asia/Tokyo
     env_file:
