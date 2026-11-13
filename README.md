@@ -17,7 +17,8 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
    - 管理者向けに使い捨て会話の定期バッチを即時テスト・実行できるスラッシュコマンドを提供。
    - 起動時にギルド個別登録（Instant Guild Command Registration）を行うため、起動直後から即時反映。
 5. **長期未更新フォーラムトピック削除管理機能 (`/test_forum_cleanup`)**
-   - サーバー内のフォーラムチャンネル（`EXCLUDED_FORUM_IDS` で除外設定可能）において、最後の投稿から21日以上経過したトピック（ピン留め除く・アーカイブ済み含む）を毎日 0:00 JST に検出し、削除確認ボタン（承認削除 `forum_thread_delete_confirm` / 残す `forum_thread_delete_keep`）を送信。
+   - サーバー内のフォーラムチャンネル（`EXCLUDED_FORUM_IDS` で除外設定可能）において、最後の投稿から21日以上経過したトピック（ピン留め除く・アーカイブ済み含む）を毎日 0:00 JST に検出し、削除確認ボタン（承認削除 `forum_thread_delete_confirm` / 残す `forum_thread_delete_keep`）を送信後、スレッドを自動的にクローズ（アーカイブ）します。
+   - Botがチャンネル／スレッドへ送信するメッセージはすべてサイレント送信（`MessageFlags.SuppressNotifications`）となり、通知音やプッシュ通知は発生しません。
    - Bot自身が送信した確認/見送りメッセージは最終投稿判定から除外。
    - テスト用スラッシュコマンド `/test_forum_cleanup [days] [dry_run]` で基準日数やドライランを指定して検証可能。
 6. **クラウド常時稼働対応 (24/7)**

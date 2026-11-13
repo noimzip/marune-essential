@@ -49,9 +49,10 @@ npm run build  # tsc による型チェックと dist/ ビルド (src/**/* の�
 - **フォーラムのピン留め・Botメッセージ除外・アーカイブ取得 (`src/services/forumManager.ts`)**:
   - `thread.flags?.has(ChannelFlags.Pinned)` は誤削除防止のため必ずスキップする。
   - 最終投稿日時は `classifyForumBotMessage` で Bot 自身の削除確認・見送りメッセージを除外した上で算出する（メッセージ0件時は `thread.createdAt` フォールバック）。確認送信済み、または見送り編集から猶予期間（`Math.max(1, thresholdDays)` 日）未満の場合は再送信をスキップする。
-  - 21日以上前のスレッドは多くがアーカイブ済みのため、アクティブスレッド一括取得に加え `fetchArchived` を `hasMore` ループでページネーションして全件取得する。送信時 `thread.archived === true` の場合は `setArchived(false)` 後に送信する。
-- **未キャッシュチャンネルと実行者権限**: ボタン押下時は `memberPermissions?.has(PermissionFlagsBits.ManageChannels)` を検証し、`interaction.channel` が `null`（再起動直後など）の場合は `guild.channels.fetch(channelId)` → `client.channels.fetch(channelId)` へフォールバックする。フォーラム用ボタンでは対象がフォーラム配下のスレッドであることも検証する。
-- **既知のエラーコード分岐**: 削除失敗時は Discord API エラーコード `50013`（権限不足）と `10003`（削除済みチャンネル/スレッド）を判別して日本語メッセージを返す。
+  - 21日以上前のスレッドは多くがアーカイブ済みのため、アクティブスレッド一括取得に加え `fetchArchived` を `hasMore` ループでページネーションして全件取得する。送信時 `thread.archived === true` の場合は `setArchived(false)` 後に送信し、送信完了後はアクティブだったものも含め `setArchived(true)` で必ずスレッドをクローズする。
+- **通知抑制 (`MessageFlags.SuppressNotifications`)**: Bot がチャンネル・スレッドへ送る自動メッセージ（ウェルカム・削除確認）はすべて `flags: [MessageFlags.SuppressNotifications]` を付与し、ボタン見送り・保留のメッセージ更新では `allowedMentions: { parse: [] }` を指定して通知を発生させない。
+- **未キャッシュチャンネルと実行者権限・アーカイブ済み操作**: ボタン押下時は `memberPermissions?.has(PermissionFlagsBits.ManageChannels)` を検証し、`interaction.channel` が `null`（再起動直後など）の場合は `guild.channels.fetch(channelId)` → `client.channels.fetch(channelId)` へフォールバックする。フォーラム用ボタンでは対象がフォーラム配下のスレッドであることも検証し、`archived === true` のスレッドで見送り操作を行う場合は一時解除・更新・再クローズを行う。
+- **既知のエラーコード分岐**: 削除失敗時は Discord API エラーコード `50013`（権限不足）・`10003`（削除済みチャンネル/スレッド）を判別し、フォーラム削除で `50083`（Thread is archived）が発生した場合は `setArchived(false)` 後にリトライする。
 
 ### 4. 設定とコマンド登録 (`src/config.ts`, `src/index.ts`)
 - **遅延設定パース**: `src/config.ts` は `getConfig()` 初回呼び出し時に `process.env` を Zod 検証してキャッシュする。テストでモジュールをインポートしただけでクラッシュしないよう、トップレベルで `getConfig()` を呼ばないこと（注入には `setConfig()` を使う）。
