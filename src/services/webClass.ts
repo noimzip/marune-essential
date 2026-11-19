@@ -14,6 +14,7 @@ const BROWSER_PROFILE = join(STATE_DIRECTORY, 'chrome');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const ASSIGNMENT_CACHE_MS = 15 * 60 * 1000;
+export const WEBCLASS_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const COURSE_CONCURRENCY = 4;
 
 const coursesSchema = z.array(z.object({
@@ -148,16 +149,26 @@ async function loadAssignments(): Promise<Assignment[]> {
 export function createAssignmentService(load = loadAssignments) {
   let cache: { assignments: Assignment[]; expiresAt: number } | undefined;
   let loading: Promise<Assignment[]> | undefined;
+  let failure: { error: unknown; retryAt: number } | undefined;
 
   return async function getUpcomingAssignments(now = new Date(), refresh = false): Promise<Assignment[]> {
     let assignments: Assignment[];
     if (!loading && !refresh && cache && cache.expiresAt > Date.now()) {
       assignments = cache.assignments;
     } else {
-      loading ??= load()
+      if (failure && failure.retryAt > Date.now()) {
+        throw failure.error;
+      }
+      loading ??= Promise.resolve()
+        .then(load)
         .then((assignments) => {
           cache = { assignments, expiresAt: Date.now() + ASSIGNMENT_CACHE_MS };
+          failure = undefined;
           return assignments;
+        })
+        .catch((error: unknown) => {
+          failure = { error, retryAt: Date.now() + WEBCLASS_RETRY_INTERVAL_MS };
+          throw error;
         })
         .finally(() => { loading = undefined; });
       assignments = await loading;

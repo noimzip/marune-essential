@@ -149,4 +149,42 @@ describe('WebClass assignments', () => {
     await upcoming(now, true);
     expect(load).toHaveBeenCalledTimes(3);
   });
+
+  it('shares a failed load across callers and retries after the common cooldown', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const error = new Error('WebClass offline');
+    const assignment = { course: 'プログラミング', title: '課題', deadline: now.getTime() + 60_000 };
+    const load = vi.fn().mockRejectedValueOnce(error).mockResolvedValue([assignment]);
+    const upcoming = createAssignmentService(load);
+
+    await expect(upcoming(now)).rejects.toBe(error);
+    await expect(upcoming(now)).rejects.toBe(error);
+    await expect(upcoming(now, true)).rejects.toBe(error);
+    expect(load).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+    await expect(upcoming(now)).rejects.toBe(error);
+    expect(load).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(1);
+    await expect(upcoming(now)).resolves.toEqual([assignment]);
+    await expect(upcoming(now)).resolves.toEqual([assignment]);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a fresh successful result available during a failed forced refresh', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const error = new Error('WebClass session expired');
+    const assignment = { course: 'プログラミング', title: '課題', deadline: now.getTime() + 60_000 };
+    const load = vi.fn().mockResolvedValueOnce([assignment]).mockRejectedValue(error);
+    const upcoming = createAssignmentService(load);
+
+    await expect(upcoming(now)).resolves.toEqual([assignment]);
+    await expect(upcoming(now, true)).rejects.toBe(error);
+    await expect(upcoming(now)).resolves.toEqual([assignment]);
+    await expect(upcoming(now, true)).rejects.toBe(error);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
 });
