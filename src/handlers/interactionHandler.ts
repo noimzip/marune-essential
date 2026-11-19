@@ -12,6 +12,7 @@ import {
   FORUM_KEEP_MARKER,
 } from '../services/forumManager.js';
 import { handleDailyBatchRun } from '../commands/dailyBatchRun.js';
+import { handleKadai } from '../commands/kadai.js';
 import { handleTestForumCleanup } from '../commands/testForumCleanup.js';
 
 const ALL_MANAGED_BUTTON_IDS = new Set<string>([
@@ -229,6 +230,8 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
         await handleDailyBatchRun(interaction);
       } else if (interaction.commandName === 'test_forum_cleanup') {
         await handleTestForumCleanup(interaction);
+      } else if (interaction.commandName === 'kadai') {
+        await handleKadai(interaction);
       }
       return;
     }

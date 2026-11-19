@@ -20,6 +20,7 @@ export const BUTTON_IDS = {
 
 export interface LifecycleResult {
   created: boolean;
+  createdChannel: TextChannel | null;
   createdChannelName: string;
   confirmSentChannels: string[];
   deletedChannels: string[];
@@ -58,6 +59,7 @@ export async function runLifecycleForGuild(
 ): Promise<LifecycleResult> {
   const result: LifecycleResult = {
     created: false,
+    createdChannel: null,
     createdChannelName: '',
     confirmSentChannels: [],
     deletedChannels: [],
@@ -110,6 +112,7 @@ export async function runLifecycleForGuild(
         reason: '毎日0:00の使い捨て会話チャンネル自動生成',
       });
       result.created = true;
+      result.createdChannel = newChannel;
 
       try {
         await newChannel.send({

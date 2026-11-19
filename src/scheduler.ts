@@ -1,7 +1,9 @@
 import { Cron } from 'croner';
-import type { Client } from 'discord.js';
+import { type Client, MessageFlags } from 'discord.js';
 import { runDailyLifecycle } from './services/channelManager.js';
 import { runForumCleanup } from './services/forumManager.js';
+import { formatAssignmentMessage } from './services/assignmentMessages.js';
+import { getUpcomingAssignments, WebClassError } from './services/webClass.js';
 
 export function startDailyScheduler(client: Client): Cron {
   console.log('[Scheduler] Initializing daily lifecycle cron job at 00:00:00 JST...');
@@ -15,11 +17,12 @@ export function startDailyScheduler(client: Client): Cron {
       },
     },
     async () => {
-      console.log(`[Scheduler] Daily batch triggered at ${new Date().toISOString()}`);
+      const referenceDate = new Date();
+      console.log(`[Scheduler] Daily batch triggered at ${referenceDate.toISOString()}`);
 
       // 1. Disposable daily channel lifecycle
       try {
-        const result = await runDailyLifecycle(client);
+        const result = await runDailyLifecycle(client, referenceDate);
         console.log(
           `[Scheduler] Disposable channel batch finished.\n` +
             `  - Created: ${result.created ? `#${result.createdChannelName}` : 'Already exists'}\n` +
@@ -27,6 +30,18 @@ export function startDailyScheduler(client: Client): Cron {
             `  - Deleted: ${result.deletedChannels.length} (${result.deletedChannels.join(', ') || 'none'})\n` +
             `  - Errors: ${result.errors.length}`
         );
+        if (result.createdChannel) {
+          try {
+            const assignments = await getUpcomingAssignments(referenceDate, true);
+            await result.createdChannel.send({
+              ...formatAssignmentMessage(assignments),
+              flags: [MessageFlags.SuppressNotifications],
+            });
+          } catch (error) {
+            const reason = error instanceof WebClassError ? error.message : 'Failed to publish WebClass assignments.';
+            console.error(`[Scheduler] ${reason}`);
+          }
+        }
       } catch (error) {
         console.error('[Scheduler] Failed to execute daily channel lifecycle:', error);
       }
