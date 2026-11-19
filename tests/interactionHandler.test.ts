@@ -1,15 +1,95 @@
-import { describe, it, expect, vi } from 'vitest';
-import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { ChannelFlags, ChannelFlagsBitField, ChannelType, Collection, type Interaction, PermissionFlagsBits } from 'discord.js';
+import { configSchema, setConfig } from '../src/config.js';
+import { formatChannelName } from '../src/utils/dateUtils.js';
 import { handleInteraction } from '../src/handlers/interactionHandler.js';
 import { BUTTON_IDS } from '../src/services/channelManager.js';
 import * as channelManager from '../src/services/channelManager.js';
 import {
   FORUM_BUTTON_IDS,
+  FORUM_CONFIRM_MARKER,
   FORUM_KEEP_MARKER,
 } from '../src/services/forumManager.js';
 import * as forumManager from '../src/services/forumManager.js';
 
+const guildId = 'guild-1';
+const categoryId = 'category-1';
+
+function mockButton(customId: string, channelId: string, ...channels: { id: string }[]) {
+  const channelMap = new Map(channels.map((channel) => [channel.id, channel]));
+  const fetch = vi.fn(async (id: string) => channelMap.get(id) ?? null);
+  const interaction = {
+    isChatInputCommand: () => false,
+    isButton: () => true,
+    customId,
+    channelId,
+    guildId,
+    guild: { channels: { fetch } },
+    client: { channels: { fetch: vi.fn().mockResolvedValue(null) } },
+    memberPermissions: { has: (permission: bigint) => permission === PermissionFlagsBits.ManageChannels },
+    user: { id: 'moderator', tag: 'Moderator#0001' },
+    message: { id: 'confirmation' },
+    channel: null as object | null,
+    deferReply: vi.fn().mockResolvedValue(undefined),
+    deferUpdate: vi.fn().mockResolvedValue(undefined),
+    editReply: vi.fn().mockResolvedValue(undefined),
+    followUp: vi.fn().mockResolvedValue(undefined),
+  };
+  return { interaction, fetch, run: () => handleInteraction(interaction as unknown as Interaction) };
+}
+
+function makeDisposableChannel() {
+  const createdAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  return {
+    id: 'daily-1',
+    type: ChannelType.GuildText,
+    guildId,
+    parentId: categoryId,
+    name: formatChannelName(createdAt),
+    createdAt,
+    delete: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeForumThread() {
+  const bot = { id: 'bot-1' };
+  const forum = {
+    id: 'forum-1',
+    type: ChannelType.GuildForum,
+    guildId,
+    guild: { members: { me: bot } },
+    permissionsFor: vi.fn().mockReturnValue({ has: () => true }),
+  };
+  const confirmation = {
+    id: 'confirmation',
+    author: bot,
+    content: FORUM_CONFIRM_MARKER,
+    components: [],
+  };
+  const history = new Collection<string, { author: { id: string }; content: string }>();
+  const messages = {
+    fetch: vi.fn(async (options: { message?: string }) => options.message ? confirmation : history),
+  };
+  const thread = {
+    id: 'thread-1',
+    type: ChannelType.PublicThread,
+    guildId,
+    parentId: forum.id,
+    flags: new ChannelFlagsBitField(),
+    archived: false,
+    name: 'forum thread',
+    messages,
+    setArchived: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+  };
+  return { forum, thread, confirmation, history };
+}
+
 describe('interactionHandler', () => {
+  beforeEach(() => {
+    setConfig(configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: guildId, CATEGORY_ID: categoryId }));
+  });
+
   describe('Slash Command: daily-batch-run', () => {
     it('rejects user without ManageChannels permission', async () => {
       const mockInteraction: any = {
@@ -91,96 +171,55 @@ describe('interactionHandler', () => {
       );
     });
 
-    it('deletes channel on confirm button when authorized', async () => {
-      const mockChannelDelete = vi.fn().mockResolvedValue({});
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: BUTTON_IDS.CONFIRM_DELETE,
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        channel: {
-          delete: mockChannelDelete,
-        },
-        user: { tag: 'AdminUser#0001' },
-        reply: vi.fn().mockResolvedValue({}),
-      };
+    it('fetches and deletes the current managed channel when authorized', async () => {
+      const channel = makeDisposableChannel();
+      const { interaction, fetch, run } = mockButton(BUTTON_IDS.CONFIRM_DELETE, channel.id, channel);
 
-      await handleInteraction(mockInteraction);
+      await run();
 
-      expect(mockInteraction.reply).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('チャンネルを削除しています'),
-          ephemeral: true,
-        })
+      expect(fetch).toHaveBeenCalledWith(channel.id, { force: true, cache: false });
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('チャンネルを削除しています') })
       );
-      expect(mockChannelDelete).toHaveBeenCalledWith(
+      expect(channel.delete).toHaveBeenCalledWith(
         expect.stringContaining('ユーザー承認による使い捨てチャンネル手動削除')
       );
     });
 
-    it('fetches uncached channel by channelId and deletes it', async () => {
-      const mockChannelDelete = vi.fn().mockResolvedValue({});
-      const fetchedChannel = {
-        id: 'ch-uncached-1',
-        delete: mockChannelDelete,
-      };
+    it('falls back to a fresh client lookup when the channel is missing in the guild lookup', async () => {
+      const channel = makeDisposableChannel();
+      const { interaction, run } = mockButton(BUTTON_IDS.CONFIRM_DELETE, channel.id);
+      interaction.client.channels.fetch.mockResolvedValue(channel);
 
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: BUTTON_IDS.CONFIRM_DELETE,
-        channel: null, // Uncached channel
-        channelId: 'ch-uncached-1',
-        guild: {
-          channels: {
-            fetch: vi.fn().mockResolvedValue(fetchedChannel),
-          },
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { username: 'AdminUser' },
-        reply: vi.fn().mockResolvedValue({}),
-      };
+      await run();
 
-      await handleInteraction(mockInteraction);
+      expect(interaction.client.channels.fetch).toHaveBeenCalledWith(channel.id, { force: true, cache: false });
+      expect(channel.delete).toHaveBeenCalledOnce();
+    });
 
-      expect(mockInteraction.guild.channels.fetch).toHaveBeenCalledWith('ch-uncached-1');
-      expect(mockChannelDelete).toHaveBeenCalled();
+    it.each([{ parentId: 'elsewhere' }, { name: 'renamed' }])('does not delete when the channel changed: %o', async (change) => {
+      const original = makeDisposableChannel();
+      const current = { ...original, ...change };
+      const { interaction, run } = mockButton(BUTTON_IDS.CONFIRM_DELETE, current.id, current);
+      interaction.channel = original;
+
+      await run();
+
+      expect(current.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('削除対象の使い捨て会話ではありません') })
+      );
     });
 
     it('handles permission denied error (50013) on channel delete', async () => {
-      const mockChannelDelete = vi.fn().mockRejectedValue({
-        code: 50013,
-        message: 'Missing Permissions',
-      });
+      const channel = makeDisposableChannel();
+      channel.delete.mockRejectedValue({ code: 50013, message: 'Missing Permissions' });
+      const { interaction, run } = mockButton(BUTTON_IDS.CONFIRM_DELETE, channel.id, channel);
 
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: BUTTON_IDS.CONFIRM_DELETE,
-        custom_id: BUTTON_IDS.CONFIRM_DELETE,
-        channel: {
-          delete: mockChannelDelete,
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { username: 'AdminUser' },
-        reply: vi.fn().mockResolvedValue({}),
-        followUp: vi.fn().mockResolvedValue({}),
-        replied: true,
-      };
+      await run();
 
-      await handleInteraction(mockInteraction);
-
-      expect(mockInteraction.followUp).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('Botにこのチャンネルを削除する権限'),
-          ephemeral: true,
-        })
+      expect(interaction.editReply).toHaveBeenLastCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('Botにこのチャンネルを削除する権限') })
       );
     });
 
@@ -312,205 +351,168 @@ describe('interactionHandler', () => {
       );
     });
 
-    it('rejects forum button outside forum threads', async () => {
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CONFIRM_DELETE,
-        memberPermissions: {
-          has: () => true,
-        },
-        channel: {
-          isThread: () => false,
-          type: ChannelType.GuildText,
-          delete: vi.fn(),
-        },
-        reply: vi.fn().mockResolvedValue({}),
-      };
+    it('refuses deletion when the parent cannot be verified as a forum', async () => {
+      const { forum, thread } = makeForumThread();
+      const parent = { ...forum, type: ChannelType.GuildText };
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, parent);
 
-      await handleInteraction(mockInteraction);
+      await run();
 
-      expect(mockInteraction.reply).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('フォーラムチャンネル配下のトピック内でのみ有効'),
-          ephemeral: true,
-        })
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('フォーラムチャンネル配下のトピック内でのみ有効') })
       );
-      expect(mockInteraction.channel.delete).not.toHaveBeenCalled();
+      expect(thread.delete).not.toHaveBeenCalled();
     });
 
-    it('deletes uncached forum thread on confirm button when authorized', async () => {
-      const mockThreadDelete = vi.fn().mockResolvedValue({});
-      const fetchedThread = {
-        id: 'th-uncached',
-        isThread: () => true,
-        parent: { type: ChannelType.GuildForum },
-        delete: mockThreadDelete,
-      };
+    it('deletes an uncached forum thread after checking the current confirmation and replies', async () => {
+      const { forum, thread } = makeForumThread();
+      const { interaction, fetch, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
 
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CONFIRM_DELETE,
-        channel: null,
-        channelId: 'th-uncached',
-        guild: {
-          channels: {
-            fetch: vi.fn().mockResolvedValue(fetchedThread),
-          },
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { tag: 'Moderator#0001' },
-        reply: vi.fn().mockResolvedValue({}),
-      };
+      await run();
 
-      await handleInteraction(mockInteraction);
-
-      expect(mockInteraction.guild.channels.fetch).toHaveBeenCalledWith('th-uncached');
-      expect(mockInteraction.reply).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('削除が承認されました'),
-          ephemeral: true,
-        })
+      expect(fetch.mock.calls).toEqual([
+        [thread.id, { force: true, cache: false }],
+        [forum.id, { force: true, cache: false }],
+      ]);
+      expect(thread.messages.fetch).toHaveBeenLastCalledWith({ after: 'confirmation', limit: 100, cache: false });
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('削除が承認されました') })
       );
-      expect(mockThreadDelete).toHaveBeenCalledWith(
+      expect(thread.delete).toHaveBeenCalledWith(
         expect.stringContaining('長期未更新フォーラムトピック削除承認 (承認者: Moderator#0001)')
       );
     });
 
-    it('updates confirmation message to kept state on keep button', async () => {
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CANCEL_KEEP,
-        channel: {
-          isThread: () => true,
-          parent: { type: ChannelType.GuildForum },
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { id: 'user-777' },
-        update: vi.fn().mockResolvedValue({}),
-      };
+    it('does not delete a thread that was pinned after issuing the confirmation', async () => {
+      const { forum, thread } = makeForumThread();
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
+      interaction.channel = { ...thread, flags: new ChannelFlagsBitField() };
+      thread.flags.add(ChannelFlags.Pinned);
 
-      await handleInteraction(mockInteraction);
+      await run();
 
-      expect(mockInteraction.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining(FORUM_KEEP_MARKER),
-          components: [],
-        })
+      expect(thread.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('ピン留め') })
       );
     });
 
-    it('temporarily unarchives and re-closes an archived thread on keep button', async () => {
-      const mockSetArchived = vi.fn().mockResolvedValue({});
-      const mockUpdate = vi.fn().mockResolvedValue({});
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CANCEL_KEEP,
-        channel: {
-          isThread: () => true,
-          archived: true,
-          parent: { type: ChannelType.GuildForum },
-          setArchived: mockSetArchived,
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { id: 'user-777' },
-        update: mockUpdate,
-      };
+    it('does not delete a forum thread with new activity', async () => {
+      const { forum, thread, history } = makeForumThread();
+      history.set('reply', { author: { id: 'another-member' }, content: 'New activity' });
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
 
-      await handleInteraction(mockInteraction);
+      await run();
 
-      expect(mockSetArchived).toHaveBeenNthCalledWith(
-        1,
-        false,
-        expect.stringContaining('一時解除')
+      expect(thread.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('削除確認後に新しい投稿') })
       );
-      expect(mockUpdate).toHaveBeenCalledWith(
+    });
+
+    it('does not delete when message history is unavailable', async () => {
+      const { forum, thread } = makeForumThread();
+      thread.messages.fetch.mockRejectedValue(new Error('Discord history lookup failed'));
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
+
+      await run();
+
+      expect(thread.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('投稿を確認できない') })
+      );
+    });
+
+    it('does not interpret empty history as inactivity when the bot lacks permission', async () => {
+      const { forum, thread } = makeForumThread();
+      forum.permissionsFor.mockReturnValue({ has: () => false });
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
+
+      await run();
+
+      expect(thread.messages.fetch).not.toHaveBeenCalled();
+      expect(thread.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('投稿を確認する権限がない') })
+      );
+    });
+
+    it('does not delete when the original confirmation was edited to keep', async () => {
+      const { forum, thread, confirmation } = makeForumThread();
+      confirmation.content = FORUM_KEEP_MARKER;
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
+
+      await run();
+
+      expect(thread.delete).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('現在有効な削除確認ではない') })
+      );
+    });
+
+    it.each([false, true])('edits the source message to keep and preserves archive state (archived: %s)', async (archived) => {
+      const { forum, thread } = makeForumThread();
+      thread.archived = archived;
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CANCEL_KEEP, thread.id, thread, forum);
+
+      await run();
+
+      expect(interaction.deferUpdate).toHaveBeenCalledOnce();
+      expect(interaction.editReply).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining(FORUM_KEEP_MARKER),
           components: [],
           allowedMentions: { parse: [] },
         })
       );
-      expect(mockSetArchived).toHaveBeenNthCalledWith(
-        2,
-        true,
-        expect.stringContaining('再クローズ')
-      );
+      expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual(archived ? [false, true] : []);
     });
 
     it('restores the original archive state when the keep edit fails', async () => {
-      const setArchived = vi.fn().mockResolvedValue(undefined);
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CANCEL_KEEP,
-        channel: {
-          isThread: () => true,
-          archived: true,
-          parent: { type: ChannelType.GuildForum },
-          setArchived,
-        },
-        memberPermissions: { has: () => true },
-        user: { id: 'user-777' },
-        update: vi.fn().mockRejectedValue(new Error('update failed')),
-        reply: vi.fn().mockResolvedValue(undefined),
-      };
+      const { forum, thread } = makeForumThread();
+      thread.archived = true;
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CANCEL_KEEP, thread.id, thread, forum);
+      interaction.editReply.mockRejectedValue(new Error('update failed'));
 
-      await handleInteraction(mockInteraction);
+      await run();
 
-      expect(setArchived.mock.calls.map(([value]) => value)).toEqual([false, true]);
-      expect(mockInteraction.reply).toHaveBeenCalledWith(
+      expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual([false, true]);
+      expect(interaction.followUp).toHaveBeenCalledWith(
         expect.objectContaining({ content: expect.stringContaining('見送り処理に失敗') })
       );
     });
 
     it.each([false, true])('retries delete error 50083 and restores the archive on failure (fails: %s)', async (fails) => {
-      const mockSetArchived = vi.fn().mockResolvedValue({});
-      const mockThreadDelete = vi
-        .fn()
-        .mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' });
+      const { forum, thread } = makeForumThread();
+      thread.archived = true;
+      thread.delete.mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' });
       if (fails) {
-        mockThreadDelete.mockRejectedValueOnce(new Error('retry failed'));
-      } else {
-        mockThreadDelete.mockResolvedValueOnce({});
+        thread.delete.mockRejectedValueOnce(new Error('retry failed'));
       }
+      const { run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
 
-      const mockInteraction: any = {
-        isChatInputCommand: () => false,
-        isButton: () => true,
-        customId: FORUM_BUTTON_IDS.CONFIRM_DELETE,
-        channel: {
-          id: 'th-archived',
-          isThread: () => true,
-          archived: true,
-          parent: { type: ChannelType.GuildForum },
-          setArchived: mockSetArchived,
-          delete: mockThreadDelete,
-        },
-        memberPermissions: {
-          has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
-        },
-        user: { tag: 'Moderator#0001' },
-        reply: vi.fn().mockResolvedValue({}),
-      };
+      await run();
 
-      await handleInteraction(mockInteraction);
+      expect(thread.delete).toHaveBeenCalledTimes(2);
+      expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual(fails ? [false, true] : [false]);
+    });
 
-      expect(mockSetArchived).toHaveBeenCalledWith(
-        false,
-        expect.stringContaining('アーカイブ解除')
+    it('restores the archive and skips the retry when new activity appears while opening', async () => {
+      const { forum, thread, history } = makeForumThread();
+      thread.archived = true;
+      thread.delete.mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' });
+      thread.setArchived.mockImplementationOnce(async () => {
+        history.set('new-reply', { author: { id: 'another-member' }, content: 'Reopened' });
+      });
+      const { interaction, run } = mockButton(FORUM_BUTTON_IDS.CONFIRM_DELETE, thread.id, thread, forum);
+
+      await run();
+
+      expect(thread.delete).toHaveBeenCalledTimes(1);
+      expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual([false, true]);
+      expect(interaction.editReply).toHaveBeenLastCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('削除確認後に新しい投稿') })
       );
-      expect(mockThreadDelete).toHaveBeenCalledTimes(2);
-      expect(mockSetArchived.mock.calls.map(([value]) => value)).toEqual(fails ? [false, true] : [false]);
     });
   });
 });

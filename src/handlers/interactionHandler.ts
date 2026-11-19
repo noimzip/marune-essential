@@ -1,15 +1,20 @@
 import {
-  ButtonInteraction,
+  type ButtonInteraction,
+  ChannelFlags,
   ChannelType,
+  type ForumChannel,
+  type GuildBasedChannel,
   Interaction,
   PermissionFlagsBits,
-  TextChannel,
-  ThreadChannel,
+  type ThreadChannel,
 } from 'discord.js';
+import { getConfig, parseExcludedForumIds } from '../config.js';
+import { calculateDiffDays } from '../utils/dateUtils.js';
 import { BUTTON_IDS } from '../services/channelManager.js';
 import {
   FORUM_BUTTON_IDS,
   FORUM_KEEP_MARKER,
+  classifyForumBotMessage,
 } from '../services/forumManager.js';
 import { withTemporaryThreadUnarchive } from '../services/forumThreadArchive.js';
 import { handleDailyBatchRun } from '../commands/dailyBatchRun.js';
@@ -23,54 +28,43 @@ const ALL_MANAGED_BUTTON_IDS = new Set<string>([
   FORUM_BUTTON_IDS.CANCEL_KEEP,
 ]);
 
-/**
- * Resolves the target channel/thread from interaction cache or falls back to Discord API fetch.
- */
-async function resolveInteractionChannel(
+const CHANNEL_FETCH_OPTIONS = { force: true, cache: false };
+const MESSAGE_CHECK_LIMIT = 100;
+
+async function fetchCurrentGuildChannel(
   interaction: ButtonInteraction,
-  logPrefix: string
-): Promise<any | null> {
-  let channel: any = interaction.channel;
-  if (!channel && interaction.channelId) {
-    try {
-      channel =
-        (await interaction.guild?.channels.fetch(interaction.channelId)) ??
-        (await interaction.client.channels.fetch(interaction.channelId));
-    } catch (fetchErr) {
-      console.error(`${logPrefix} Failed to fetch channel:`, fetchErr);
-    }
+  channelId: string,
+): Promise<GuildBasedChannel | null> {
+  try {
+    const channel =
+      (await interaction.guild?.channels.fetch(channelId, CHANNEL_FETCH_OPTIONS)) ??
+      (await interaction.client.channels.fetch(channelId, CHANNEL_FETCH_OPTIONS));
+    return channel && 'guildId' in channel && channel.guildId === interaction.guildId
+      ? channel
+      : null;
+  } catch (error) {
+    console.error('[InteractionHandler] Failed to verify current channel:', error);
+    return null;
   }
-  return channel ?? null;
 }
 
-/**
- * Maps Discord REST deletion errors (50013 / 10003) into user-facing ephemeral feedback.
- */
+function discordErrorCode(error: unknown): unknown {
+  return error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+}
+
 async function replyDeleteError(
   interaction: ButtonInteraction,
-  err: any,
-  logPrefix: string,
-  targetLabel: string
+  error: unknown,
+  targetLabel: string,
 ): Promise<void> {
-  console.error(`${logPrefix} Error deleting ${targetLabel}:`, err);
-  const errorMessage =
-    err?.code === 50013
-      ? `Botにこの${targetLabel}を削除する権限がありません。`
-      : err?.code === 10003
+  console.error(`[InteractionHandler] Error deleting ${targetLabel}:`, error);
+  const code = discordErrorCode(error);
+  const message = code === 50013
+    ? `Botにこの${targetLabel}を削除する権限がありません。`
+    : code === 10003
       ? `この${targetLabel}は既に削除されているか、見つかりません。`
-      : `${targetLabel}の削除に失敗しました: ${err?.message ?? err}`;
-
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({
-      content: `⚠️ ${errorMessage}`,
-      ephemeral: true,
-    });
-  } else {
-    await interaction.reply({
-      content: `⚠️ ${errorMessage}`,
-      ephemeral: true,
-    });
-  }
+      : `${targetLabel}の削除に失敗しました。`;
+  await interaction.editReply({ content: `⚠️ ${message}` });
 }
 
 async function handleDisposableChannelButton(
@@ -79,28 +73,29 @@ async function handleDisposableChannelButton(
   const { customId } = interaction;
 
   if (customId === BUTTON_IDS.CONFIRM_DELETE) {
-    const channel = await resolveInteractionChannel(interaction, '[Button:Confirm]');
+    await interaction.deferReply({ ephemeral: true });
+    const config = getConfig();
+    const channel = interaction.guildId === config.GUILD_ID
+      ? await fetchCurrentGuildChannel(interaction, interaction.channelId)
+      : null;
 
-    if (!channel || typeof channel.delete !== 'function') {
-      await interaction.reply({
-        content: '⚠️ チャンネル情報を取得できませんでした。',
-        ephemeral: true,
-      });
+    if (!channel) {
+      await interaction.editReply({ content: '⚠️ 現在のチャンネル情報を確認できないため、削除を見送りました。' });
       return;
     }
 
-    await interaction.reply({
-      content: '🗑️ チャンネルを削除しています...',
-      ephemeral: true,
-    });
+    const age = calculateDiffDays(channel.name, new Date(), channel.createdAt ?? undefined);
+    if (channel.type !== ChannelType.GuildText || channel.parentId !== config.CATEGORY_ID || age === null || age <= 0) {
+      await interaction.editReply({ content: '⚠️ 現在のチャンネルは削除対象の使い捨て会話ではありません。' });
+      return;
+    }
 
+    await interaction.editReply({ content: '🗑️ チャンネルを削除しています...' });
     const executorTag = interaction.user.tag ?? interaction.user.username;
     try {
-      await (channel as TextChannel).delete(
-        `ユーザー承認による使い捨てチャンネル手動削除 (実行者: ${executorTag})`
-      );
-    } catch (err: any) {
-      await replyDeleteError(interaction, err, '[Button:Confirm]', 'チャンネル');
+      await channel.delete(`ユーザー承認による使い捨てチャンネル手動削除 (実行者: ${executorTag})`);
+    } catch (error) {
+      await replyDeleteError(interaction, error, 'チャンネル');
     }
     return;
   }
@@ -124,87 +119,135 @@ async function handleDisposableChannelButton(
   }
 }
 
-async function handleForumThreadButton(
-  interaction: ButtonInteraction
-): Promise<void> {
-  const { customId } = interaction;
-  const channel = await resolveInteractionChannel(interaction, '[ForumButton]');
+async function forumDeleteBlockReason(
+  interaction: ButtonInteraction,
+  thread: ThreadChannel,
+  forum: ForumChannel,
+): Promise<string | undefined> {
+  if (thread.flags?.has(ChannelFlags.Pinned)) {
+    return 'トピックがピン留めされているため、削除を見送りました。';
+  }
 
-  const isThread =
-    typeof channel?.isThread === 'function'
-      ? channel.isThread()
-      : channel?.type === ChannelType.PublicThread ||
-        channel?.type === ChannelType.PrivateThread;
+  try {
+    const bot = forum.guild.members.me ?? await forum.guild.members.fetchMe();
+    if (!forum.permissionsFor(bot)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
+      return 'トピックの投稿を確認する権限がないため、削除を見送りました。';
+    }
 
-  const isUnderNonForumParent =
-    channel?.parent && channel.parent.type !== ChannelType.GuildForum;
-
-  if (!channel || !isThread || isUnderNonForumParent) {
-    await interaction.reply({
-      content: '⚠️ この操作はフォーラムチャンネル配下のトピック内でのみ有効です。',
-      ephemeral: true,
+    const confirmation = await thread.messages.fetch({
+      message: interaction.message.id,
+      ...CHANNEL_FETCH_OPTIONS,
     });
+    if (classifyForumBotMessage(confirmation, bot.id) !== 'confirm') {
+      return '現在有効な削除確認ではないため、削除を見送りました。';
+    }
+
+    const recent = await thread.messages.fetch({
+      after: confirmation.id,
+      limit: MESSAGE_CHECK_LIMIT,
+      cache: false,
+    });
+    if (recent.some((message) => classifyForumBotMessage(message, bot.id) === null)) {
+      return '削除確認後に新しい投稿があるため、削除を見送りました。';
+    }
+    if (recent.size >= MESSAGE_CHECK_LIMIT) {
+      return '削除確認後の投稿をすべて確認できないため、削除を見送りました。';
+    }
+  } catch (error) {
+    console.error('[ForumButton] Failed to verify current thread messages:', error);
+    return 'トピックの投稿を確認できないため、削除を見送りました。';
+  }
+}
+
+async function handleForumThreadButton(interaction: ButtonInteraction): Promise<void> {
+  const deleting = interaction.customId === FORUM_BUTTON_IDS.CONFIRM_DELETE;
+  if (deleting) {
+    await interaction.deferReply({ ephemeral: true });
+  } else {
+    await interaction.deferUpdate();
+  }
+
+  const config = getConfig();
+  const thread = interaction.guildId === config.GUILD_ID
+    ? await fetchCurrentGuildChannel(interaction, interaction.channelId)
+    : null;
+  const forum = thread?.type === ChannelType.PublicThread && thread.parentId
+    ? await fetchCurrentGuildChannel(interaction, thread.parentId)
+    : null;
+  if (thread?.type !== ChannelType.PublicThread || forum?.type !== ChannelType.GuildForum) {
+    const content = '⚠️ この操作はフォーラムチャンネル配下のトピック内でのみ有効です。現在の所属先を確認できない場合は操作を見送ります。';
+    if (deleting) {
+      await interaction.editReply({ content });
+    } else {
+      await interaction.followUp({ content, ephemeral: true });
+    }
     return;
   }
 
-  if (customId === FORUM_BUTTON_IDS.CONFIRM_DELETE) {
-    if (typeof channel.delete !== 'function') {
-      await interaction.reply({
-        content: '⚠️ トピック情報を取得できませんでした。',
-        ephemeral: true,
-      });
+  if (deleting) {
+    const blocked = parseExcludedForumIds(config.EXCLUDED_FORUM_IDS).includes(forum.id)
+      ? 'このフォーラムは削除確認の対象外です。'
+      : await forumDeleteBlockReason(interaction, thread, forum);
+    if (blocked) {
+      await interaction.editReply({ content: `⚠️ ${blocked}` });
       return;
     }
 
-    await interaction.reply({
-      content: '✅ 削除が承認されました。このトピックを削除します。',
-      ephemeral: true,
-    });
-
+    await interaction.editReply({ content: '✅ 削除が承認されました。このトピックを削除します。' });
     const executorTag = interaction.user.tag ?? interaction.user.username;
     const auditReason = `長期未更新フォーラムトピック削除承認 (承認者: ${executorTag})`;
     try {
-      await (channel as ThreadChannel).delete(auditReason);
-    } catch (err: any) {
-      if (err?.code === 50083 && typeof channel.setArchived === 'function') {
-        try {
-          await withTemporaryThreadUnarchive(channel as ThreadChannel, {
-            openReason: 'トピック削除のためアーカイブ解除',
-            closeReason: 'トピック削除失敗後の再クローズ',
-            afterSuccess: 'deleted',
-            forceOpen: true,
-          }, () => channel.delete(auditReason));
-          return;
-        } catch (retryErr: any) {
-          await replyDeleteError(interaction, retryErr, '[ForumButton:Confirm]', 'トピック');
-          return;
+      await thread.delete(auditReason);
+    } catch (error) {
+      if (discordErrorCode(error) !== 50083) {
+        await replyDeleteError(interaction, error, 'トピック');
+        return;
+      }
+
+      let blockedAfterOpening: string | undefined;
+      try {
+        await withTemporaryThreadUnarchive(thread, {
+          openReason: 'トピック削除のためアーカイブ解除',
+          closeReason: 'トピック削除失敗後の再クローズ',
+          afterSuccess: 'deleted',
+          forceOpen: true,
+        }, async () => {
+          const currentThread = await fetchCurrentGuildChannel(interaction, thread.id);
+          if (currentThread?.type !== ChannelType.PublicThread || currentThread.parentId !== forum.id) {
+            blockedAfterOpening = '現在のトピック情報を確認できないため、削除を見送りました。';
+          } else {
+            blockedAfterOpening = await forumDeleteBlockReason(interaction, currentThread, forum);
+          }
+          if (blockedAfterOpening) throw new Error(blockedAfterOpening);
+          await thread.delete(auditReason);
+        });
+      } catch (retryError) {
+        if (blockedAfterOpening) {
+          await interaction.editReply({ content: `⚠️ ${blockedAfterOpening}` });
+        } else {
+          await replyDeleteError(interaction, retryError, 'トピック');
         }
       }
-      await replyDeleteError(interaction, err, '[ForumButton:Confirm]', 'トピック');
     }
     return;
   }
 
-  if (customId === FORUM_BUTTON_IDS.CANCEL_KEEP) {
-    try {
-      await withTemporaryThreadUnarchive(channel as ThreadChannel, {
-        openReason: '見送り処理のためアーカイブ一時解除',
-        closeReason: '見送り処理後の再クローズ',
-        afterSuccess: 'restore',
-      }, () => interaction.update({
-        content: `${FORUM_KEEP_MARKER}（承認者: <@${interaction.user.id}>）`,
-        components: [],
-        allowedMentions: { parse: [] },
-      }));
-    } catch (updateErr: any) {
-      console.error('[ForumButton:Keep] Failed to update message:', updateErr);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: `⚠️ 見送り処理に失敗しました: ${updateErr.message ?? updateErr}`,
-          ephemeral: true,
-        });
-      }
-    }
+  try {
+    await withTemporaryThreadUnarchive(thread, {
+      openReason: '見送り処理のためアーカイブ一時解除',
+      closeReason: '見送り処理後の再クローズ',
+      afterSuccess: 'restore',
+    }, () => interaction.editReply({
+      content: `${FORUM_KEEP_MARKER}（承認者: <@${interaction.user.id}>）`,
+      components: [],
+      allowedMentions: { parse: [] },
+    }));
+  } catch (error) {
+    console.error('[ForumButton] Failed to update the keep message:', error);
+    await interaction.followUp({
+      content: '⚠️ 見送り処理に失敗しました。',
+      ephemeral: true,
+    });
   }
 }
 
