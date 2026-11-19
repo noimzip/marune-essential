@@ -5,11 +5,10 @@ import {
 } from 'discord.js';
 import { getConfig } from '../config.js';
 import {
-  ForumCleanupResult,
   runForumCleanup,
+  type ForumCleanupResult,
 } from '../services/forumManager.js';
-
-const MAX_DISCORD_MESSAGE_LENGTH = 1950;
+import { replyToBatchFailure, sendBatchReport, type BatchReport } from './batchReport.js';
 
 export const testForumCleanupCommand = new SlashCommandBuilder()
   .setName('test_forum_cleanup')
@@ -31,70 +30,51 @@ export const testForumCleanupCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
-/**
- * Formats the cleanup result into an ephemeral reply within Discord's 2000-character limit.
- */
-export function formatForumCleanupReport(result: ForumCleanupResult): string {
+function formatForumCleanupReport(result: ForumCleanupResult): BatchReport {
   const modeLabel = result.dryRun
     ? '🧪 ドライラン（送信なし）'
     : '📨 テスト実行（確認メッセージ送信）';
 
-  const headerLines = [
+  const summary = [
     `**${modeLabel}** (基準: **${result.thresholdDays}日以上**未更新)`,
     `- **検査フォーラム数**: ${result.inspectedForumCount} 件`,
     `- **検査トピック数**: ${result.inspectedThreadCount} 件 (ピン留め除外: ${result.skippedPinnedCount} 件)`,
     `- **検出対象トピック**: ${result.targets.length} 件`,
+    `- **エラー**: ${result.errors.length} 件`,
   ];
 
   if (!result.dryRun) {
-    headerLines.push(
+    summary.push(
       `- **確認メッセージ送信**: ${result.confirmSentThreads.length} 件 (送信済み/見送り猶予スキップ: ${result.skippedAlreadyConfirmedCount} 件)`
     );
   }
 
-  const lines = [...headerLines];
+  const details: string[] = [];
 
   if (result.targets.length > 0) {
-    lines.push('\n📋 **対象トピック一覧**:');
-    let omittedCount = 0;
+    details.push('\n📋 **対象トピック一覧**');
+    const sentThreadIds = new Set(result.confirmSentThreads.map(({ threadId }) => threadId));
 
     for (const target of result.targets) {
       const statusTag = result.dryRun
         ? target.alreadyConfirmed
           ? ' [確認/見送り済]'
           : ''
-        : result.confirmSentThreads.some((s) => s.threadId === target.threadId)
+        : sentThreadIds.has(target.threadId)
         ? ' [送信完了]'
         : ' [スキップ]';
 
-      const entry = `- \`#${target.forumName}\` / **${target.threadName}** (最終投稿: ${target.lastPostDateStr}・${target.elapsedDays}日経過)${statusTag}`;
-      const candidate = [...lines, entry].join('\n');
-
-      if (candidate.length > MAX_DISCORD_MESSAGE_LENGTH - 150) {
-        omittedCount++;
-      } else {
-        lines.push(entry);
-      }
-    }
-
-    if (omittedCount > 0) {
-      lines.push(`*(...他 ${omittedCount} 件省略)*`);
+      details.push(`- \`#${target.forumName}\` / **${target.threadName}** (最終投稿: ${target.lastPostDateStr}・${target.elapsedDays}日経過)${statusTag}`);
     }
   } else {
-    lines.push('\n該当する長期未更新トピックはありませんでした。');
+    details.push('\n該当する長期未更新トピックはありませんでした。');
   }
 
   if (result.errors.length > 0) {
-    const errorBlock =
-      '\n⚠️ **エラー詳細**:\n' +
-      result.errors.slice(0, 5).map((e) => `- ${e}`).join('\n');
-    const current = lines.join('\n');
-    if (current.length + errorBlock.length <= MAX_DISCORD_MESSAGE_LENGTH) {
-      lines.push(errorBlock);
-    }
+    details.push('\n⚠️ **エラー詳細**', ...result.errors.map((error) => `- ${error}`));
   }
 
-  return lines.join('\n');
+  return { summary, details, filename: 'forum-cleanup-report.txt' };
 }
 
 export async function handleTestForumCleanup(
@@ -122,22 +102,17 @@ export async function handleTestForumCleanup(
 
   await interaction.deferReply({ ephemeral: true });
 
+  let result: ForumCleanupResult;
   try {
-    const result = await runForumCleanup(interaction.client, {
+    result = await runForumCleanup(interaction.client, {
       days,
       dryRun,
     });
 
-    await interaction.editReply({
-      content: formatForumCleanupReport(result),
-    });
-  } catch (error: any) {
-    console.error('[Command:test_forum_cleanup] Error running forum cleanup:', error);
-    const errorContent = `⚠️ フォーラムクリーンアップ実行中にエラーが発生しました: ${error.message ?? error}`;
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ content: errorContent });
-    } else {
-      await interaction.reply({ content: errorContent, ephemeral: true });
-    }
+  } catch (error) {
+    await replyToBatchFailure(interaction, error);
+    return;
   }
+
+  await sendBatchReport(interaction, formatForumCleanupReport(result));
 }
