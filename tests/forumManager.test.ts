@@ -19,6 +19,7 @@ function createMockCollection<K, V>(entries: Array<[K, V]>): Map<K, V> {
 function makeMockMessage(opts: {
   id: string;
   createdAt: Date;
+  editedAt?: Date;
   bot?: boolean;
   authorId?: string;
   content?: string;
@@ -27,6 +28,7 @@ function makeMockMessage(opts: {
   return {
     id: opts.id,
     createdAt: opts.createdAt,
+    editedAt: opts.editedAt ?? null,
     createdTimestamp: opts.createdAt.getTime(),
     author: {
       id: opts.authorId ?? (opts.bot ? 'bot-1' : 'user-1'),
@@ -324,7 +326,7 @@ describe('forumManager (runForumCleanupForGuild)', () => {
   it('respects keep grace period and resumes notifying after thresholdDays pass since keep', async () => {
     const mockSend = vi.fn().mockResolvedValue({});
 
-    // Kept 5 days ago, last human post 30 days ago -> should skip
+    // An old confirmation was edited 5 days ago -> should skip
     const keptRecentlyThread: any = {
       id: 'th-kept-recent',
       name: 'kept-recent',
@@ -339,7 +341,8 @@ describe('forumManager (runForumCleanupForGuild)', () => {
               'm-keep',
               makeMockMessage({
                 id: 'm-keep',
-                createdAt: daysAgo(5),
+                createdAt: daysAgo(27),
+                editedAt: daysAgo(5),
                 bot: true,
                 authorId: 'bot-1',
                 content: `${FORUM_KEEP_MARKER}（承認者: <@u1>）`,

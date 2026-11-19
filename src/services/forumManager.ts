@@ -172,7 +172,7 @@ async function inspectThreadActivity(
   thresholdDays: number,
   referenceDate: Date
 ): Promise<ThreadActivityInspection> {
-  let latestBotCleanup: { kind: 'confirm' | 'keep'; createdAt: Date } | null = null;
+  let latestBotCleanup: { kind: 'confirm' | 'keep'; actedAt: Date } | null = null;
   let lastHumanPostDate: Date | null = null;
   let beforeId: string | undefined;
 
@@ -195,7 +195,10 @@ async function inspectThreadActivity(
         const kind = classifyForumBotMessage(msg, botUserId);
         if (kind !== null) {
           if (!latestBotCleanup) {
-            latestBotCleanup = { kind, createdAt: msg.createdAt };
+            latestBotCleanup = {
+              kind,
+              actedAt: kind === 'keep' ? msg.editedAt ?? msg.createdAt : msg.createdAt,
+            };
           }
           continue;
         }
@@ -224,7 +227,7 @@ async function inspectThreadActivity(
       alreadyConfirmed = true;
     } else if (latestBotCleanup.kind === 'keep') {
       const keepGraceDays = Math.max(1, thresholdDays);
-      const keepElapsed = calculateElapsedDays(latestBotCleanup.createdAt, referenceDate);
+      const keepElapsed = calculateElapsedDays(latestBotCleanup.actedAt, referenceDate);
       if (keepElapsed < keepGraceDays) {
         alreadyConfirmed = true;
       }
