@@ -1,12 +1,16 @@
-import { request, type APIRequestContext } from 'playwright';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { chromium, request, type APIRequestContext } from 'playwright';
 import { z } from 'zod';
 
 const WEBCLASS_ORIGIN = 'https://webclass.kosen-k.go.jp';
 const DASHBOARD_API = `${WEBCLASS_ORIGIN}/webclass/ip_mods.php/plugin/score_summary_table`;
-export const WEBCLASS_LOGIN_URL = `${WEBCLASS_ORIGIN}/webclass/login.php?auth_mode=SAML`;
-export const WEBCLASS_SESSION_FILE = '.webclass/session.json';
-export const WEBCLASS_COURSES_URL = `${DASHBOARD_API}/courses`;
-export const WEBCLASS_CONTENTS_URL = `${DASHBOARD_API}/contents`;
+const LOGIN_URL = `${WEBCLASS_ORIGIN}/webclass/login.php?auth_mode=SAML`;
+const COURSES_URL = `${DASHBOARD_API}/courses`;
+const CONTENTS_URL = `${DASHBOARD_API}/contents`;
+const STATE_DIRECTORY = '.webclass';
+const SESSION_FILE = join(STATE_DIRECTORY, 'session.json');
+const BROWSER_PROFILE = join(STATE_DIRECTORY, 'chrome');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const ASSIGNMENT_CACHE_MS = 15 * 60 * 1000;
@@ -30,19 +34,25 @@ export interface Assignment {
 
 export class WebClassError extends Error {}
 
+class ExpiredSessionError extends WebClassError {
+  constructor() {
+    super('WebClass のセッションが無効です。運用者が再ログインしてください。');
+  }
+}
+
 async function readList<T>(session: APIRequestContext, url: string, schema: z.ZodType<T>): Promise<T> {
   const response = await session.get(url, { maxRedirects: 0 }).catch(() => {
     throw new WebClassError('WebClass への接続に失敗しました。');
   });
   if ([301, 302, 303, 307, 308, 401, 403].includes(response.status())) {
-    throw new WebClassError('WebClass のセッションが無効です。運用者が再ログインしてください。');
+    throw new ExpiredSessionError();
   }
   if (!response.ok()) {
     throw new WebClassError(`WebClass が HTTP ${response.status()} を返しました。`);
   }
   if (response.headers()['content-type']?.includes('text/html')) {
     // The dashboard returns a login page with HTTP 200 when the session has expired.
-    throw new WebClassError('WebClass のセッションが無効です。運用者が再ログインしてください。');
+    throw new ExpiredSessionError();
   }
   const result = schema.safeParse(await response.json().catch(() => undefined));
   if (!result.success) {
@@ -51,8 +61,34 @@ async function readList<T>(session: APIRequestContext, url: string, schema: z.Zo
   return result.data;
 }
 
-export function readWebClassCourses(session: APIRequestContext) {
-  return readList(session, WEBCLASS_COURSES_URL, coursesSchema);
+export async function signInToWebClass(interactive: boolean): Promise<void> {
+  await mkdir(STATE_DIRECTORY, { mode: 0o700, recursive: true });
+  const browser = await chromium.launchPersistentContext(BROWSER_PROFILE, {
+    channel: 'chrome',
+    headless: !interactive,
+    locale: 'ja-JP',
+    timeout: 15_000,
+  });
+  try {
+    const page = browser.pages()[0] ?? await browser.newPage();
+    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.getByRole('link', { name: /ダッシュボード|dashboard/i }).waitFor({
+      timeout: interactive ? 300_000 : 15_000,
+    });
+    await readList(browser.request, COURSES_URL, coursesSchema);
+
+    const cookies = await browser.cookies([COURSES_URL, CONTENTS_URL]);
+    const tempDirectory = await mkdtemp(join(STATE_DIRECTORY, 'login-'));
+    try {
+      const tempFile = join(tempDirectory, 'session.json');
+      await writeFile(tempFile, JSON.stringify({ cookies, origins: [] }), { mode: 0o600 });
+      await rename(tempFile, SESSION_FILE);
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 function parseDeadline(value: string): number {
@@ -67,20 +103,20 @@ function parseDeadline(value: string): number {
   throw new WebClassError('WebClass の締切日時を読み取れませんでした。');
 }
 
-async function loadAssignments(): Promise<Assignment[]> {
+async function loadWithSavedSession(): Promise<Assignment[]> {
   const session = await request.newContext({
-    storageState: WEBCLASS_SESSION_FILE,
+    storageState: SESSION_FILE,
     timeout: 10_000,
   }).catch(() => {
     throw new WebClassError('WebClass のログイン情報を読み込めません。運用者がログインしてください。');
   });
 
   try {
-    const courses = await readWebClassCourses(session);
+    const courses = await readList(session, COURSES_URL, coursesSchema);
     const assignments: Assignment[] = [];
     for (let offset = 0; offset < courses.length; offset += COURSE_CONCURRENCY) {
       const batch = await Promise.all(courses.slice(offset, offset + COURSE_CONCURRENCY).map(async (course) => {
-        const url = new URL(WEBCLASS_CONTENTS_URL);
+        const url = new URL(CONTENTS_URL);
         url.searchParams.set('group_id', course.group_id);
         const items = await readList(session, url.href, contentsSchema);
         return items.flatMap((item) => item.hidden_content || !item.end_date ? [] : [{
@@ -94,6 +130,18 @@ async function loadAssignments(): Promise<Assignment[]> {
     return assignments;
   } finally {
     await session.dispose();
+  }
+}
+
+async function loadAssignments(): Promise<Assignment[]> {
+  try {
+    return await loadWithSavedSession();
+  } catch (error) {
+    if (!(error instanceof ExpiredSessionError)) throw error;
+
+    // Use the normal SSO flow in the dedicated browser if Microsoft still has a valid sign-in.
+    await signInToWebClass(false).catch(() => { throw error; });
+    return loadWithSavedSession();
   }
 }
 

@@ -98,7 +98,7 @@ Google Chrome をインストールした端末で、Bot と同じプロジェ�
 npm run webclass:login
 ```
 
-開いた Chrome で学校の Microsoft アカウントにサインインします。ログイン後は、同じPCのBotがローカルに保存した WebClass のセッション（`.webclass/session.json`）を使います。セッションが期限切れになったら、同じコマンドで再ログインできます。
+開いた Chrome で学校の Microsoft アカウントにサインインします。専用の Chrome プロファイルと WebClass のセッションは `.webclass/` に保存されます。Microsoft の画面でサインイン状態を維持すると、有効な間は WebClass のセッションをBotが再取得できます。Microsoft の再認証が必要になったら、同じコマンドでサインインします。
 
 Bot の起動時に、指定した Discord サーバーに `/kadai` が登録されます。自動投稿には午前0時 JST にBotが起動している必要があります。ログインしたアカウントの科目・教材名・締切は、自動投稿先のチャンネルを閲覧できるメンバーに表示されます。
 
