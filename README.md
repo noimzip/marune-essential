@@ -35,7 +35,7 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
 
 ## 🛠️ 必要要件
 
-- **Node.js**: v20以上 (推奨: v22 / v24)
+- **Node.js**: v22.12.0 以降の v22、v24、または v26 以降（推奨は v24）
 - **Discord Bot Token**: Discord Developer Portalより取得
 - **Discord Bot 権限 (Bot Permissions)**:
   - `Manage Channels` (チャンネルの管理)
@@ -106,6 +106,7 @@ Bot の起動時に、指定した Discord サーバーに `/kadai` が登録さ
 
 ```bash
 npm test
+npm run typecheck
 ```
 
 ### 4. ビルドと起動

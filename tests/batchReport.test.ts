@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChatInputCommandInteraction, InteractionEditReplyOptions } from 'discord.js';
+import type { AttachmentPayload, ChatInputCommandInteraction, InteractionEditReplyOptions } from 'discord.js';
 import { handleDailyBatchRun } from '../src/commands/dailyBatchRun.js';
 import { handleTestForumCleanup } from '../src/commands/testForumCleanup.js';
 import * as channelManager from '../src/services/channelManager.js';
@@ -25,7 +25,7 @@ function attachmentText(reply: InteractionEditReplyOptions): string {
   if (!attachment || typeof attachment !== 'object' || !('attachment' in attachment)) {
     throw new Error('Expected a report attachment');
   }
-  return String(attachment.attachment);
+  return String((attachment as AttachmentPayload).attachment);
 }
 
 describe('admin command report delivery', () => {

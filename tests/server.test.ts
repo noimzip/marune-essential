@@ -7,8 +7,9 @@ describe('HealthServer (/healthz)', () => {
   let server: http.Server | null = null;
 
   afterEach(async () => {
-    if (server) {
-      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    const listeningServer = server;
+    if (listeningServer) {
+      await new Promise<void>((resolve) => listeningServer.close(() => resolve()));
       server = null;
     }
   });
@@ -26,13 +27,11 @@ describe('HealthServer (/healthz)', () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body.status).toBe('ok');
-    expect(body.botStatus).toEqual({
-      ready: true,
-      tag: 'TestBot#1234',
-      ping: 42,
+    expect(body).toMatchObject({
+      status: 'ok',
+      botStatus: { ready: true, tag: 'TestBot#1234', ping: 42 },
+      uptime: expect.any(Number),
     });
-    expect(typeof body.uptime).toBe('number');
   });
 
   it('should respond 503 if client is not ready', async () => {
@@ -48,8 +47,7 @@ describe('HealthServer (/healthz)', () => {
     expect(response.status).toBe(503);
 
     const body = await response.json();
-    expect(body.status).toBe('initializing');
-    expect(body.botStatus.ready).toBe(false);
+    expect(body).toMatchObject({ status: 'initializing', botStatus: { ready: false } });
   });
 
   it('should respond 404 on unknown paths', async () => {
@@ -59,7 +57,7 @@ describe('HealthServer (/healthz)', () => {
     expect(response.status).toBe(404);
 
     const body = await response.json();
-    expect(body.error).toBe('Not Found');
+    expect(body).toEqual({ error: 'Not Found' });
   });
 
   it('rejects startup when another server is already listening', async () => {

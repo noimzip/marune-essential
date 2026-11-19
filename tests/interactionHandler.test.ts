@@ -35,6 +35,8 @@ describe('interactionHandler', () => {
     it('executes batch lifecycle when user has ManageChannels permission', async () => {
       const mockResult = {
         created: true,
+        createdChannel: null,
+        todayChannel: null,
         createdChannelName: '使い捨て会話_11月12日',
         confirmSentChannels: ['使い捨て会話_11月11日'],
         deletedChannels: ['使い捨て会話_11月05日'],
