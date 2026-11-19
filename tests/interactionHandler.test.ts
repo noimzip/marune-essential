@@ -447,12 +447,42 @@ describe('interactionHandler', () => {
       );
     });
 
-    it('unarchives and retries deletion if thread delete returns 50083 (Thread is archived)', async () => {
+    it('restores the original archive state when the keep edit fails', async () => {
+      const setArchived = vi.fn().mockResolvedValue(undefined);
+      const mockInteraction: any = {
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: FORUM_BUTTON_IDS.CANCEL_KEEP,
+        channel: {
+          isThread: () => true,
+          archived: true,
+          parent: { type: ChannelType.GuildForum },
+          setArchived,
+        },
+        memberPermissions: { has: () => true },
+        user: { id: 'user-777' },
+        update: vi.fn().mockRejectedValue(new Error('update failed')),
+        reply: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await handleInteraction(mockInteraction);
+
+      expect(setArchived.mock.calls.map(([value]) => value)).toEqual([false, true]);
+      expect(mockInteraction.reply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('見送り処理に失敗') })
+      );
+    });
+
+    it.each([false, true])('retries delete error 50083 and restores the archive on failure (fails: %s)', async (fails) => {
       const mockSetArchived = vi.fn().mockResolvedValue({});
       const mockThreadDelete = vi
         .fn()
-        .mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' })
-        .mockResolvedValueOnce({});
+        .mockRejectedValueOnce({ code: 50083, message: 'Thread is archived' });
+      if (fails) {
+        mockThreadDelete.mockRejectedValueOnce(new Error('retry failed'));
+      } else {
+        mockThreadDelete.mockResolvedValueOnce({});
+      }
 
       const mockInteraction: any = {
         isChatInputCommand: () => false,
@@ -480,6 +510,7 @@ describe('interactionHandler', () => {
         expect.stringContaining('アーカイブ解除')
       );
       expect(mockThreadDelete).toHaveBeenCalledTimes(2);
+      expect(mockSetArchived.mock.calls.map(([value]) => value)).toEqual(fails ? [false, true] : [false]);
     });
   });
 });

@@ -423,6 +423,46 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('preserves the original archive state after a failed send (archived: %s)', async (archived) => {
+    const thread = {
+      id: 'thread-1',
+      name: 'old-thread',
+      parentId: 'forum-1',
+      archived,
+      createdAt: daysAgo(45),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+      setArchived: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockRejectedValue(new Error('confirmation send failed')),
+    };
+    const forum = {
+      id: 'forum-1',
+      name: 'forum-1',
+      type: ChannelType.GuildForum,
+      permissionsFor: () => ({ has: () => true }),
+      threads: { fetchArchived: vi.fn().mockResolvedValue({ threads: new Map(), hasMore: false }) },
+    };
+    if (archived) {
+      forum.threads.fetchArchived.mockResolvedValue({ threads: new Map([[thread.id, thread]]), hasMore: false });
+    }
+    const guild = {
+      members: { me: { id: 'bot-1' } },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(new Map([[forum.id, forum]])),
+        fetchActiveThreads: vi.fn().mockResolvedValue({ threads: archived ? new Map() : new Map([[thread.id, thread]]) }),
+      },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    const result = await runForumCleanupForGuild(guild, {
+      referenceDate: refDate,
+      actionDelayMs: 0,
+    });
+
+    expect(result.confirmSentThreads).toEqual([]);
+    expect(result.errors).toEqual([expect.stringContaining('confirmation send failed')]);
+    expect(thread.send).toHaveBeenCalledOnce();
+    expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual(archived ? [false, true] : []);
+  });
+
   it('does not send messages or unarchive threads when dryRun is true', async () => {
     const mockSend = vi.fn();
     const mockSetArchived = vi.fn();

@@ -16,6 +16,7 @@ import {
 import { getConfig, parseExcludedForumIds } from '../config.js';
 import { runExclusiveBatch } from '../utils/batchExecution.js';
 import { calculateElapsedDays, formatJSTDateSlash } from '../utils/dateUtils.js';
+import { withTemporaryThreadUnarchive } from './forumThreadArchive.js';
 
 export const FORUM_BUTTON_IDS = {
   CONFIRM_DELETE: 'forum_thread_delete_confirm',
@@ -247,16 +248,6 @@ async function sendConfirmationToThread(
   elapsedDays: number,
   thresholdDays: number
 ): Promise<void> {
-  if (thread.archived && typeof thread.setArchived === 'function') {
-    try {
-      await thread.setArchived(false, '削除確認メッセージ送信のためアーカイブ一時解除');
-    } catch (unarchiveErr: any) {
-      console.warn(
-        `[ForumManager] Could not unarchive thread #${thread.name} before sending: ${unarchiveErr.message}`
-      );
-    }
-  }
-
   const confirmButton = new ButtonBuilder()
     .setCustomId(FORUM_BUTTON_IDS.CONFIRM_DELETE)
     .setLabel('🗑️ 承認して削除する')
@@ -273,25 +264,18 @@ async function sendConfirmationToThread(
   );
 
   const lastPostDateStr = formatJSTDateSlash(lastPostDate);
-  await thread.send({
+  await withTemporaryThreadUnarchive(thread, {
+    openReason: '削除確認メッセージ送信のためアーカイブ一時解除',
+    closeReason: '削除確認メッセージ送信後の自動クローズ',
+    afterSuccess: 'archive',
+  }, () => thread.send({
     content:
       `${FORUM_CONFIRM_MARKER}\n` +
       `最後の投稿から **${thresholdDays}日以上**（最終投稿: \`${lastPostDateStr}\`・\`${elapsedDays}日経過\`）が経過しています。\n` +
       `不要なトピックであれば、「チャンネルの管理」権限を持つメンバーが下のボタンを押して削除を承認してください。`,
     components: [row],
     flags: [MessageFlags.SuppressNotifications],
-  });
-
-  // Close (archive) the thread after sending the confirmation prompt
-  if (typeof thread.setArchived === 'function') {
-    try {
-      await thread.setArchived(true, '削除確認メッセージ送信後の自動クローズ');
-    } catch (archiveErr: any) {
-      console.warn(
-        `[ForumManager] Could not archive thread #${thread.name} after sending confirmation: ${archiveErr.message}`
-      );
-    }
-  }
+  }));
 }
 
 /**
