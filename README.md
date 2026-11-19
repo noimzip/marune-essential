@@ -26,17 +26,22 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
    - Dockerマルチステージビルド・軽量Alpineイメージ。
    - 日本標準時（`TZ=Asia/Tokyo`）完全対応（月跨ぎ・年跨ぎ・うるう年計算対応）。
    - シグナルハンドリング（SIGINT / SIGTERM）によるグレースフルシャットダウン対応。
+7. **WebClass の課題一覧（ローカル運用）**
+   - 毎日 00:00 JST に新しく作成した使い捨て会話チャンネルへ、締切が今後7日以内の課題を投稿します。
+   - 提出状況に関係なく、締切が近い順に番号・教科・教材・締切日時（日本時間）を表示します。
+   - `/kadai` でも確認できます。応答は実行者だけに表示され、利用間隔はユーザーごとに15分です。
 
 ---
 
 ## 🛠️ 必要要件
 
-- **Node.js**: v20以上 (推奨: v22 / v24)
+- **Node.js**: v22.12.0 以降の v22、v24、または v26 以降（推奨は v24）
 - **Discord Bot Token**: Discord Developer Portalより取得
 - **Discord Bot 権限 (Bot Permissions)**:
   - `Manage Channels` (チャンネルの管理)
   - `Manage Threads` (スレッドの管理)
   - `Send Messages` (メッセージを送信)
+  - `Attach Files` (Discord の文字数上限を超えるWebClass課題一覧をファイルで投稿する場合)
   - `Send Messages in Threads` (スレッド内でメッセージを送信)
   - `View Channels` (チャンネルを見る)
   - `Read Message History` (メッセージ履歴を読む)
@@ -85,10 +90,23 @@ PORT=8080
 TZ=Asia/Tokyo
 ```
 
+### WebClass と連携する（ローカル）
+
+Google Chrome をインストールした端末で、Bot と同じプロジェクトディレクトリから次を実行します。
+
+```bash
+npm run webclass:login
+```
+
+開いた Chrome で学校の Microsoft アカウントにサインインします。専用の Chrome プロファイルと WebClass のセッションは `.webclass/` に保存されます。Microsoft の画面でサインイン状態を維持すると、有効な間は WebClass のセッションをBotが再取得できます。Microsoft の再認証が必要になったら、同じコマンドでサインインします。 WebClass の取得に失敗した場合は、Bot 全体で5分間待ってから再試行します。
+
+Bot の起動時に、指定した Discord サーバーに `/kadai` が登録されます。自動投稿の対象は、午前0時 JST にBotが作った当日のチャンネルです。取得や送信が失敗した場合は、当日中は5分ごとに再試行し、同日中にBotを再起動した場合も未投稿なら再開します。再開時の重複確認には「メッセージ履歴を読む」権限が必要です。ログインしたアカウントの科目・教材名・締切は、自動投稿先のチャンネルを閲覧できるメンバーに表示されます。
+
 ### 3. テストの実行
 
 ```bash
 npm test
+npm run typecheck
 ```
 
 ### 4. ビルドと起動

@@ -14,7 +14,9 @@ import {
   ThreadChannel,
 } from 'discord.js';
 import { getConfig, parseExcludedForumIds } from '../config.js';
+import { runExclusiveBatch } from '../utils/batchExecution.js';
 import { calculateElapsedDays, formatJSTDateSlash } from '../utils/dateUtils.js';
+import { withTemporaryThreadUnarchive } from './forumThreadArchive.js';
 
 export const FORUM_BUTTON_IDS = {
   CONFIRM_DELETE: 'forum_thread_delete_confirm',
@@ -172,7 +174,7 @@ async function inspectThreadActivity(
   thresholdDays: number,
   referenceDate: Date
 ): Promise<ThreadActivityInspection> {
-  let latestBotCleanup: { kind: 'confirm' | 'keep'; createdAt: Date } | null = null;
+  let latestBotCleanup: { kind: 'confirm' | 'keep'; actedAt: Date } | null = null;
   let lastHumanPostDate: Date | null = null;
   let beforeId: string | undefined;
 
@@ -195,7 +197,10 @@ async function inspectThreadActivity(
         const kind = classifyForumBotMessage(msg, botUserId);
         if (kind !== null) {
           if (!latestBotCleanup) {
-            latestBotCleanup = { kind, createdAt: msg.createdAt };
+            latestBotCleanup = {
+              kind,
+              actedAt: kind === 'keep' ? msg.editedAt ?? msg.createdAt : msg.createdAt,
+            };
           }
           continue;
         }
@@ -224,7 +229,7 @@ async function inspectThreadActivity(
       alreadyConfirmed = true;
     } else if (latestBotCleanup.kind === 'keep') {
       const keepGraceDays = Math.max(1, thresholdDays);
-      const keepElapsed = calculateElapsedDays(latestBotCleanup.createdAt, referenceDate);
+      const keepElapsed = calculateElapsedDays(latestBotCleanup.actedAt, referenceDate);
       if (keepElapsed < keepGraceDays) {
         alreadyConfirmed = true;
       }
@@ -243,16 +248,6 @@ async function sendConfirmationToThread(
   elapsedDays: number,
   thresholdDays: number
 ): Promise<void> {
-  if (thread.archived && typeof thread.setArchived === 'function') {
-    try {
-      await thread.setArchived(false, '削除確認メッセージ送信のためアーカイブ一時解除');
-    } catch (unarchiveErr: any) {
-      console.warn(
-        `[ForumManager] Could not unarchive thread #${thread.name} before sending: ${unarchiveErr.message}`
-      );
-    }
-  }
-
   const confirmButton = new ButtonBuilder()
     .setCustomId(FORUM_BUTTON_IDS.CONFIRM_DELETE)
     .setLabel('🗑️ 承認して削除する')
@@ -269,25 +264,18 @@ async function sendConfirmationToThread(
   );
 
   const lastPostDateStr = formatJSTDateSlash(lastPostDate);
-  await thread.send({
+  await withTemporaryThreadUnarchive(thread, {
+    openReason: '削除確認メッセージ送信のためアーカイブ一時解除',
+    closeReason: '削除確認メッセージ送信後の自動クローズ',
+    afterSuccess: 'archive',
+  }, () => thread.send({
     content:
       `${FORUM_CONFIRM_MARKER}\n` +
       `最後の投稿から **${thresholdDays}日以上**（最終投稿: \`${lastPostDateStr}\`・\`${elapsedDays}日経過\`）が経過しています。\n` +
       `不要なトピックであれば、「チャンネルの管理」権限を持つメンバーが下のボタンを押して削除を承認してください。`,
     components: [row],
     flags: [MessageFlags.SuppressNotifications],
-  });
-
-  // Close (archive) the thread after sending the confirmation prompt
-  if (typeof thread.setArchived === 'function') {
-    try {
-      await thread.setArchived(true, '削除確認メッセージ送信後の自動クローズ');
-    } catch (archiveErr: any) {
-      console.warn(
-        `[ForumManager] Could not archive thread #${thread.name} after sending confirmation: ${archiveErr.message}`
-      );
-    }
-  }
+  }));
 }
 
 /**
@@ -298,20 +286,17 @@ export async function runForumCleanup(
   options: ForumCleanupOptions = {}
 ): Promise<ForumCleanupResult> {
   const config = getConfig();
-  const guild = await client.guilds.fetch(config.GUILD_ID);
+  return runExclusiveBatch(`forum-cleanup:${config.GUILD_ID}`, async () => {
+    const guild = await client.guilds.fetch(config.GUILD_ID);
+    if (!guild) {
+      throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
+    }
 
-  if (!guild) {
-    throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
-  }
-
-  const excludedForumIds =
-    options.excludedForumIds ?? parseExcludedForumIds(config.EXCLUDED_FORUM_IDS);
-  const days = options.days ?? config.FORUM_INACTIVE_DAYS;
-
-  return runForumCleanupForGuild(guild, {
-    ...options,
-    days,
-    excludedForumIds,
+    return runForumCleanupForGuild(guild, {
+      ...options,
+      days: options.days ?? config.FORUM_INACTIVE_DAYS,
+      excludedForumIds: options.excludedForumIds ?? parseExcludedForumIds(config.EXCLUDED_FORUM_IDS),
+    });
   });
 }
 
@@ -353,14 +338,20 @@ export async function runForumCleanupForGuild(
 
   // Fetch all guild active threads once to avoid redundant API calls per forum
   let activeByParent: Map<string, ThreadChannel[]> | undefined;
-  if (typeof guild.channels.fetchActiveThreads === 'function') {
-    const activeFetched = await guild.channels.fetchActiveThreads();
+  if (forumChannels.length > 0 && typeof guild.channels.fetchActiveThreads === 'function') {
     activeByParent = new Map<string, ThreadChannel[]>();
-    for (const thread of activeFetched.threads.values()) {
-      if (!thread.parentId) continue;
-      const list = activeByParent.get(thread.parentId) ?? [];
-      list.push(thread);
-      activeByParent.set(thread.parentId, list);
+    try {
+      const activeFetched = await guild.channels.fetchActiveThreads();
+      for (const thread of activeFetched.threads.values()) {
+        if (!thread.parentId) continue;
+        const list = activeByParent.get(thread.parentId) ?? [];
+        list.push(thread);
+        activeByParent.set(thread.parentId, list);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      result.errors.push(`Failed to fetch active threads in guild ${guild.id}: ${detail}`);
+      console.error('[ForumManager] Failed to fetch active threads. Continuing with archived threads:', error);
     }
   }
 
@@ -384,7 +375,8 @@ export async function runForumCleanupForGuild(
 
     let threads: ThreadChannel[];
     try {
-      threads = await collectForumThreads(forum, activeByParent?.get(forum.id));
+      const active = activeByParent ? activeByParent.get(forum.id) ?? [] : undefined;
+      threads = await collectForumThreads(forum, active);
     } catch (fetchErr: any) {
       const errMsg = `Failed to fetch threads in #${forum.name}: ${fetchErr.message ?? fetchErr}`;
       console.error(`[ForumManager] ${errMsg}`, fetchErr);

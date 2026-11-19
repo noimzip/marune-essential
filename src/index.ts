@@ -5,12 +5,11 @@ import {
 } from 'discord.js';
 import { getConfig } from './config.js';
 import { startHealthServer } from './server.js';
-import { startDailyScheduler } from './scheduler.js';
+import { startDailyScheduler, type DailyScheduler } from './scheduler.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
 import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
+import { kadaiCommand } from './commands/kadai.js';
 import { testForumCleanupCommand } from './commands/testForumCleanup.js';
-import type { Cron } from 'croner';
-import type { Server } from 'node:http';
 
 async function main() {
   console.log('[App] Starting Disposable Channels Discord Bot...');
@@ -24,11 +23,11 @@ async function main() {
     ],
   });
 
-  let healthServer: Server | null = null;
-  let cronJob: Cron | null = null;
+
+  let cronJob: DailyScheduler | null = null;
 
   // 1. Start HTTP health check server immediately for Railway / Render
-  healthServer = startHealthServer({
+  const healthServer = await startHealthServer({
     port: config.PORT,
     client,
   });
@@ -44,9 +43,10 @@ async function main() {
         await guild.commands.set([
           dailyBatchRunCommand.toJSON(),
           testForumCleanupCommand.toJSON(),
+          kadaiCommand.toJSON(),
         ]);
         console.log(
-          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup) in guild '${guild.name}' (${guild.id})`
+          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup, /kadai) in guild '${guild.name}' (${guild.id})`
         );
       } else {
         console.warn(`[App] Guild ${config.GUILD_ID} not found. Skipping slash command registration.`);
@@ -79,10 +79,8 @@ async function main() {
       cronJob.stop();
     }
 
-    if (healthServer) {
-      console.log('[App] Closing health check HTTP server...');
-      healthServer.close();
-    }
+    console.log('[App] Closing health check HTTP server...');
+    healthServer.close();
 
     try {
       console.log('[App] Destroying Discord client...');

@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   ChannelFlags,
+  type Client,
   ChannelType,
   MessageFlags,
   PermissionFlagsBits,
 } from 'discord.js';
+import * as config from '../src/config.js';
+import { BatchAlreadyRunningError } from '../src/utils/batchExecution.js';
 import {
+  runForumCleanup,
   runForumCleanupForGuild,
   FORUM_BUTTON_IDS,
   FORUM_CONFIRM_MARKER,
@@ -19,6 +23,7 @@ function createMockCollection<K, V>(entries: Array<[K, V]>): Map<K, V> {
 function makeMockMessage(opts: {
   id: string;
   createdAt: Date;
+  editedAt?: Date;
   bot?: boolean;
   authorId?: string;
   content?: string;
@@ -27,6 +32,7 @@ function makeMockMessage(opts: {
   return {
     id: opts.id,
     createdAt: opts.createdAt,
+    editedAt: opts.editedAt ?? null,
     createdTimestamp: opts.createdAt.getTime(),
     author: {
       id: opts.authorId ?? (opts.bot ? 'bot-1' : 'user-1'),
@@ -324,7 +330,7 @@ describe('forumManager (runForumCleanupForGuild)', () => {
   it('respects keep grace period and resumes notifying after thresholdDays pass since keep', async () => {
     const mockSend = vi.fn().mockResolvedValue({});
 
-    // Kept 5 days ago, last human post 30 days ago -> should skip
+    // An old confirmation was edited 5 days ago -> should skip
     const keptRecentlyThread: any = {
       id: 'th-kept-recent',
       name: 'kept-recent',
@@ -339,7 +345,8 @@ describe('forumManager (runForumCleanupForGuild)', () => {
               'm-keep',
               makeMockMessage({
                 id: 'm-keep',
-                createdAt: daysAgo(5),
+                createdAt: daysAgo(27),
+                editedAt: daysAgo(5),
                 bot: true,
                 authorId: 'bot-1',
                 content: `${FORUM_KEEP_MARKER}（承認者: <@u1>）`,
@@ -416,6 +423,46 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('preserves the original archive state after a failed send (archived: %s)', async (archived) => {
+    const thread = {
+      id: 'thread-1',
+      name: 'old-thread',
+      parentId: 'forum-1',
+      archived,
+      createdAt: daysAgo(45),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+      setArchived: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockRejectedValue(new Error('confirmation send failed')),
+    };
+    const forum = {
+      id: 'forum-1',
+      name: 'forum-1',
+      type: ChannelType.GuildForum,
+      permissionsFor: () => ({ has: () => true }),
+      threads: { fetchArchived: vi.fn().mockResolvedValue({ threads: new Map(), hasMore: false }) },
+    };
+    if (archived) {
+      forum.threads.fetchArchived.mockResolvedValue({ threads: new Map([[thread.id, thread]]), hasMore: false });
+    }
+    const guild = {
+      members: { me: { id: 'bot-1' } },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(new Map([[forum.id, forum]])),
+        fetchActiveThreads: vi.fn().mockResolvedValue({ threads: archived ? new Map() : new Map([[thread.id, thread]]) }),
+      },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    const result = await runForumCleanupForGuild(guild, {
+      referenceDate: refDate,
+      actionDelayMs: 0,
+    });
+
+    expect(result.confirmSentThreads).toEqual([]);
+    expect(result.errors).toEqual([expect.stringContaining('confirmation send failed')]);
+    expect(thread.send).toHaveBeenCalledOnce();
+    expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual(archived ? [false, true] : []);
+  });
+
   it('does not send messages or unarchive threads when dryRun is true', async () => {
     const mockSend = vi.fn();
     const mockSetArchived = vi.fn();
@@ -475,6 +522,57 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(mockSetArchived).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('fetches active threads once across forums (request fails: %s)', async (requestFails) => {
+    const archivedThread = {
+      id: 'archived-topic',
+      name: 'archived-topic',
+      parentId: 'forum-1',
+      archived: true,
+      createdAt: daysAgo(35),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+    };
+    const forums = ['forum-1', 'forum-2'].map((id) => ({
+      id,
+      name: id,
+      type: ChannelType.GuildForum,
+      permissionsFor: () => ({ has: () => true }),
+      threads: {
+        fetchActive: vi.fn(),
+        fetchArchived: vi.fn().mockResolvedValue({
+          threads: id === 'forum-1' ? new Map([[archivedThread.id, archivedThread]]) : new Map(),
+          hasMore: false,
+        }),
+      },
+    }));
+    const fetchActiveThreads = vi.fn();
+    if (requestFails) {
+      fetchActiveThreads.mockRejectedValue(new Error('active threads unavailable'));
+    } else {
+      fetchActiveThreads.mockResolvedValue({ threads: new Map() });
+    }
+    const mockGuild = {
+      id: 'guild-1',
+      members: { me: { id: 'bot-1' } },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(new Map(forums.map((forum) => [forum.id, forum]))),
+        fetchActiveThreads,
+      },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    const result = await runForumCleanupForGuild(mockGuild, {
+      dryRun: true,
+      referenceDate: refDate,
+    });
+
+    expect(fetchActiveThreads).toHaveBeenCalledTimes(1);
+    for (const forum of forums) {
+      expect(forum.threads.fetchActive).not.toHaveBeenCalled();
+      expect(forum.threads.fetchArchived).toHaveBeenCalledTimes(1);
+    }
+    expect(result.errors).toHaveLength(requestFails ? 1 : 0);
+    expect(result.targets.map((target) => target.threadId)).toEqual([archivedThread.id]);
+  });
+
   it('records error and continues when a forum lacks required permissions', async () => {
     const forumNoPerm: any = {
       id: 'forum-noperm',
@@ -506,5 +604,36 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('locked-forum');
     expect(forumNoPerm.threads.fetchArchived).not.toHaveBeenCalled();
+  });
+});
+
+describe('runForumCleanup', () => {
+  it('rejects a concurrent request for the same guild and allows a retry after failure', async () => {
+    const configured = vi.spyOn(config, 'getConfig').mockReturnValue(
+      config.configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild-1', CATEGORY_ID: 'category-1' })
+    );
+    let failFirstFetch!: (reason: Error) => void;
+    const firstFetch = new Promise((_, reject) => {
+      failFirstFetch = reject;
+    });
+    const fetch = vi.fn()
+      .mockReturnValueOnce(firstFetch)
+      .mockResolvedValue({
+        members: { me: {} },
+        channels: { fetch: vi.fn().mockResolvedValue(new Map()) },
+      });
+    const client = { guilds: { fetch } } as unknown as Client;
+
+    try {
+      const running = runForumCleanup(client);
+      await expect(runForumCleanup(client)).rejects.toBeInstanceOf(BatchAlreadyRunningError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      failFirstFetch(new Error('first scan unavailable'));
+      await expect(running).rejects.toThrow('first scan unavailable');
+      await expect(runForumCleanup(client)).resolves.toMatchObject({ inspectedForumCount: 0 });
+    } finally {
+      configured.mockRestore();
+    }
   });
 });

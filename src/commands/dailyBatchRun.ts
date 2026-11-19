@@ -3,7 +3,8 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
-import { runDailyLifecycle } from '../services/channelManager.js';
+import { runDailyLifecycle, type LifecycleResult } from '../services/channelManager.js';
+import { replyToBatchFailure, sendBatchReport } from './batchReport.js';
 
 export const dailyBatchRunCommand = new SlashCommandBuilder()
   .setName('daily-batch-run')
@@ -24,43 +25,30 @@ export async function handleDailyBatchRun(
 
   await interaction.deferReply({ ephemeral: true });
 
+  let result: LifecycleResult;
   try {
-    const result = await runDailyLifecycle(interaction.client);
-
-    const lines = [
-      '✅ **定期バッチの即時実行が完了しました**',
-      `- **当日チャンネル作成**: ${
-        result.created ? `\`#${result.createdChannelName}\`` : '既存のためスキップ'
-      }`,
-      `- **削除確認送信**: ${result.confirmSentChannels.length} 件 (${
-        result.confirmSentChannels.map((c) => `\`#${c}\``).join(', ') || 'なし'
-      })`,
-      `- **7日経過自動削除**: ${result.deletedChannels.length} 件 (${
-        result.deletedChannels.map((c) => `\`#${c}\``).join(', ') || 'なし'
-      })`,
-    ];
-
-    if (result.errors.length > 0) {
-      lines.push(
-        '\n⚠️ **エラー詳細**:\n' + result.errors.map((e) => `- ${e}`).join('\n')
-      );
-    }
-
-    await interaction.editReply({
-      content: lines.join('\n'),
-    });
-  } catch (error: any) {
-    console.error('[Command:daily-batch-run] Error running daily lifecycle:', error);
-    const errorContent = `⚠️ バッチ実行中にエラーが発生しました: ${error.message ?? error}`;
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({
-        content: errorContent,
-      });
-    } else {
-      await interaction.reply({
-        content: errorContent,
-        ephemeral: true,
-      });
-    }
+    result = await runDailyLifecycle(interaction.client);
+  } catch (error) {
+    await replyToBatchFailure(interaction, error);
+    return;
   }
+
+  const summary = [
+    '✅ **定期バッチの即時実行が完了しました**',
+    `- **当日チャンネル作成**: ${result.created ? `1 件 (#${result.createdChannelName})` : '0 件'}`,
+    `- **削除確認送信**: ${result.confirmSentChannels.length} 件`,
+    `- **7日経過自動削除**: ${result.deletedChannels.length} 件`,
+    `- **エラー**: ${result.errors.length} 件`,
+  ];
+  const details: string[] = [];
+  if (result.confirmSentChannels.length) {
+    details.push('\n**削除確認送信先**', ...result.confirmSentChannels.map((name) => `- #${name}`));
+  }
+  if (result.deletedChannels.length) {
+    details.push('\n**削除したチャンネル**', ...result.deletedChannels.map((name) => `- #${name}`));
+  }
+  if (result.errors.length) {
+    details.push('\n⚠️ **エラー詳細**', ...result.errors.map((error) => `- ${error}`));
+  }
+  await sendBatchReport(interaction, { summary, details, filename: 'daily-batch-report.txt' });
 }

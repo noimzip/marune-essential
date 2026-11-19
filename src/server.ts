@@ -6,7 +6,7 @@ export interface HealthServerOptions {
   client?: Client;
 }
 
-export function startHealthServer(options: HealthServerOptions): http.Server {
+export async function startHealthServer(options: HealthServerOptions): Promise<http.Server> {
   const { port, client } = options;
 
   const server = http.createServer((req, res) => {
@@ -41,9 +41,16 @@ export function startHealthServer(options: HealthServerOptions): http.Server {
     res.end(JSON.stringify({ error: 'Not Found' }));
   });
 
-  server.listen(port, '0.0.0.0', () => {
-    console.log(`[HealthServer] Listening on http://0.0.0.0:${port}/healthz`);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '0.0.0.0', () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
 
+  const address = server.address();
+  const boundPort = typeof address === 'object' && address ? address.port : port;
+  console.log(`[HealthServer] Listening on http://0.0.0.0:${boundPort}/healthz`);
   return server;
 }
