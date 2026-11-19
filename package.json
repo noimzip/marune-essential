@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "webclass:login": "tsx src/webClassLogin.ts"
   },
   "keywords": [
     "discord",
@@ -20,6 +21,7 @@
     "croner": "^9.0.0",
     "discord.js": "^14.18.0",
     "dotenv": "^16.4.7",
+    "playwright": "^1.65.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
