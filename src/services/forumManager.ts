@@ -14,6 +14,7 @@ import {
   ThreadChannel,
 } from 'discord.js';
 import { getConfig, parseExcludedForumIds } from '../config.js';
+import { runExclusiveBatch } from '../utils/batchExecution.js';
 import { calculateElapsedDays, formatJSTDateSlash } from '../utils/dateUtils.js';
 
 export const FORUM_BUTTON_IDS = {
@@ -301,20 +302,17 @@ export async function runForumCleanup(
   options: ForumCleanupOptions = {}
 ): Promise<ForumCleanupResult> {
   const config = getConfig();
-  const guild = await client.guilds.fetch(config.GUILD_ID);
+  return runExclusiveBatch(`forum-cleanup:${config.GUILD_ID}`, async () => {
+    const guild = await client.guilds.fetch(config.GUILD_ID);
+    if (!guild) {
+      throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
+    }
 
-  if (!guild) {
-    throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
-  }
-
-  const excludedForumIds =
-    options.excludedForumIds ?? parseExcludedForumIds(config.EXCLUDED_FORUM_IDS);
-  const days = options.days ?? config.FORUM_INACTIVE_DAYS;
-
-  return runForumCleanupForGuild(guild, {
-    ...options,
-    days,
-    excludedForumIds,
+    return runForumCleanupForGuild(guild, {
+      ...options,
+      days: options.days ?? config.FORUM_INACTIVE_DAYS,
+      excludedForumIds: options.excludedForumIds ?? parseExcludedForumIds(config.EXCLUDED_FORUM_IDS),
+    });
   });
 }
 

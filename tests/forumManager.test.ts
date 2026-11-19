@@ -1,11 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   ChannelFlags,
+  type Client,
   ChannelType,
   MessageFlags,
   PermissionFlagsBits,
 } from 'discord.js';
+import * as config from '../src/config.js';
+import { BatchAlreadyRunningError } from '../src/utils/batchExecution.js';
 import {
+  runForumCleanup,
   runForumCleanupForGuild,
   FORUM_BUTTON_IDS,
   FORUM_CONFIRM_MARKER,
@@ -560,5 +564,36 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('locked-forum');
     expect(forumNoPerm.threads.fetchArchived).not.toHaveBeenCalled();
+  });
+});
+
+describe('runForumCleanup', () => {
+  it('rejects a concurrent request for the same guild and allows a retry after failure', async () => {
+    const configured = vi.spyOn(config, 'getConfig').mockReturnValue(
+      config.configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild-1', CATEGORY_ID: 'category-1' })
+    );
+    let failFirstFetch!: (reason: Error) => void;
+    const firstFetch = new Promise((_, reject) => {
+      failFirstFetch = reject;
+    });
+    const fetch = vi.fn()
+      .mockReturnValueOnce(firstFetch)
+      .mockResolvedValue({
+        members: { me: {} },
+        channels: { fetch: vi.fn().mockResolvedValue(new Map()) },
+      });
+    const client = { guilds: { fetch } } as unknown as Client;
+
+    try {
+      const running = runForumCleanup(client);
+      await expect(runForumCleanup(client)).rejects.toBeInstanceOf(BatchAlreadyRunningError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      failFirstFetch(new Error('first scan unavailable'));
+      await expect(running).rejects.toThrow('first scan unavailable');
+      await expect(runForumCleanup(client)).resolves.toMatchObject({ inspectedForumCount: 0 });
+    } finally {
+      configured.mockRestore();
+    }
   });
 });
