@@ -5,12 +5,11 @@ import {
 } from 'discord.js';
 import { getConfig } from './config.js';
 import { startHealthServer } from './server.js';
-import { startDailyScheduler } from './scheduler.js';
+import { startDailyScheduler, type DailyScheduler } from './scheduler.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
 import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
 import { kadaiCommand } from './commands/kadai.js';
 import { testForumCleanupCommand } from './commands/testForumCleanup.js';
-import type { Cron } from 'croner';
 
 async function main() {
   console.log('[App] Starting Disposable Channels Discord Bot...');
@@ -24,7 +23,8 @@ async function main() {
     ],
   });
 
-  let cronJob: Cron | null = null;
+
+  let cronJob: DailyScheduler | null = null;
 
   // 1. Start HTTP health check server immediately for Railway / Render
   const healthServer = await startHealthServer({

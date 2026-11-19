@@ -1,13 +1,18 @@
 import { Cron } from 'croner';
-import { type Client, MessageFlags } from 'discord.js';
+import type { Client } from 'discord.js';
 import { runDailyLifecycle } from './services/channelManager.js';
 import { runForumCleanup } from './services/forumManager.js';
-import { formatAssignmentMessage } from './services/assignmentMessages.js';
-import { getUpcomingAssignments, WebClassError } from './services/webClass.js';
+import { pendingAssignmentTopic, startAssignmentPosting } from './services/assignmentPosting.js';
 
-export function startDailyScheduler(client: Client): Cron {
+export interface DailyScheduler {
+  nextRun(): Date | null;
+  stop(): void;
+}
+
+export function startDailyScheduler(client: Client): DailyScheduler {
   console.log('[Scheduler] Initializing daily lifecycle cron job at 00:00:00 JST...');
 
+  const assignmentPosting = startAssignmentPosting(client);
   const job = new Cron(
     '0 0 0 * * *',
     {
@@ -22,7 +27,9 @@ export function startDailyScheduler(client: Client): Cron {
 
       // 1. Disposable daily channel lifecycle
       try {
-        const result = await runDailyLifecycle(client, referenceDate);
+        const result = await runDailyLifecycle(client, referenceDate, {
+          createTopic: pendingAssignmentTopic(referenceDate),
+        });
         console.log(
           `[Scheduler] Disposable channel batch finished.\n` +
             `  - Created: ${result.created ? `#${result.createdChannelName}` : 'Already exists'}\n` +
@@ -30,18 +37,7 @@ export function startDailyScheduler(client: Client): Cron {
             `  - Deleted: ${result.deletedChannels.length} (${result.deletedChannels.join(', ') || 'none'})\n` +
             `  - Errors: ${result.errors.length}`
         );
-        if (result.createdChannel) {
-          try {
-            const assignments = await getUpcomingAssignments(referenceDate, true);
-            await result.createdChannel.send({
-              ...formatAssignmentMessage(assignments),
-              flags: [MessageFlags.SuppressNotifications],
-            });
-          } catch (error) {
-            const reason = error instanceof WebClassError ? error.message : 'Failed to publish WebClass assignments.';
-            console.error(`[Scheduler] ${reason}`);
-          }
-        }
+        void assignmentPosting.post(referenceDate, result.todayChannel, result.created);
       } catch (error) {
         console.error('[Scheduler] Failed to execute daily channel lifecycle:', error);
       }
@@ -69,5 +65,11 @@ export function startDailyScheduler(client: Client): Cron {
     } JST)`
   );
 
-  return job;
+  return {
+    nextRun: () => job.nextRun(),
+    stop() {
+      job.stop();
+      assignmentPosting.stop();
+    },
+  };
 }
