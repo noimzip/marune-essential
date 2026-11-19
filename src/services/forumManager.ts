@@ -356,14 +356,20 @@ export async function runForumCleanupForGuild(
 
   // Fetch all guild active threads once to avoid redundant API calls per forum
   let activeByParent: Map<string, ThreadChannel[]> | undefined;
-  if (typeof guild.channels.fetchActiveThreads === 'function') {
-    const activeFetched = await guild.channels.fetchActiveThreads();
+  if (forumChannels.length > 0 && typeof guild.channels.fetchActiveThreads === 'function') {
     activeByParent = new Map<string, ThreadChannel[]>();
-    for (const thread of activeFetched.threads.values()) {
-      if (!thread.parentId) continue;
-      const list = activeByParent.get(thread.parentId) ?? [];
-      list.push(thread);
-      activeByParent.set(thread.parentId, list);
+    try {
+      const activeFetched = await guild.channels.fetchActiveThreads();
+      for (const thread of activeFetched.threads.values()) {
+        if (!thread.parentId) continue;
+        const list = activeByParent.get(thread.parentId) ?? [];
+        list.push(thread);
+        activeByParent.set(thread.parentId, list);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      result.errors.push(`Failed to fetch active threads in guild ${guild.id}: ${detail}`);
+      console.error('[ForumManager] Failed to fetch active threads. Continuing with archived threads:', error);
     }
   }
 
@@ -387,7 +393,8 @@ export async function runForumCleanupForGuild(
 
     let threads: ThreadChannel[];
     try {
-      threads = await collectForumThreads(forum, activeByParent?.get(forum.id));
+      const active = activeByParent ? activeByParent.get(forum.id) ?? [] : undefined;
+      threads = await collectForumThreads(forum, active);
     } catch (fetchErr: any) {
       const errMsg = `Failed to fetch threads in #${forum.name}: ${fetchErr.message ?? fetchErr}`;
       console.error(`[ForumManager] ${errMsg}`, fetchErr);

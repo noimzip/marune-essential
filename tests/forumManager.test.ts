@@ -478,6 +478,57 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(mockSetArchived).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('fetches active threads once across forums (request fails: %s)', async (requestFails) => {
+    const archivedThread = {
+      id: 'archived-topic',
+      name: 'archived-topic',
+      parentId: 'forum-1',
+      archived: true,
+      createdAt: daysAgo(35),
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+    };
+    const forums = ['forum-1', 'forum-2'].map((id) => ({
+      id,
+      name: id,
+      type: ChannelType.GuildForum,
+      permissionsFor: () => ({ has: () => true }),
+      threads: {
+        fetchActive: vi.fn(),
+        fetchArchived: vi.fn().mockResolvedValue({
+          threads: id === 'forum-1' ? new Map([[archivedThread.id, archivedThread]]) : new Map(),
+          hasMore: false,
+        }),
+      },
+    }));
+    const fetchActiveThreads = vi.fn();
+    if (requestFails) {
+      fetchActiveThreads.mockRejectedValue(new Error('active threads unavailable'));
+    } else {
+      fetchActiveThreads.mockResolvedValue({ threads: new Map() });
+    }
+    const mockGuild = {
+      id: 'guild-1',
+      members: { me: { id: 'bot-1' } },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(new Map(forums.map((forum) => [forum.id, forum]))),
+        fetchActiveThreads,
+      },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    const result = await runForumCleanupForGuild(mockGuild, {
+      dryRun: true,
+      referenceDate: refDate,
+    });
+
+    expect(fetchActiveThreads).toHaveBeenCalledTimes(1);
+    for (const forum of forums) {
+      expect(forum.threads.fetchActive).not.toHaveBeenCalled();
+      expect(forum.threads.fetchArchived).toHaveBeenCalledTimes(1);
+    }
+    expect(result.errors).toHaveLength(requestFails ? 1 : 0);
+    expect(result.targets.map((target) => target.threadId)).toEqual([archivedThread.id]);
+  });
+
   it('records error and continues when a forum lacks required permissions', async () => {
     const forumNoPerm: any = {
       id: 'forum-noperm',
