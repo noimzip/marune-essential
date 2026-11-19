@@ -54,6 +54,9 @@ describe('dateUtils', () => {
       expect(parseChannelName('使い捨て会話_13月01日')).toBeNull(); // month > 12
       expect(parseChannelName('使い捨て会話_00月01日')).toBeNull(); // month 0
       expect(parseChannelName('使い捨て会話_01月32日')).toBeNull(); // day > 31
+      expect(parseChannelName('使い捨て会話_02月30日')).toBeNull();
+      expect(parseChannelName('使い捨て会話-4月31日')).toBeNull();
+      expect(parseChannelName('使い捨て会話_02月29日')).toEqual({ month: 2, day: 29 });
     });
   });
 
@@ -133,9 +136,11 @@ describe('dateUtils', () => {
       expect(calculateDiffDays('使い捨て会話_11月10日', refDate, createdAtOneYearAgo)).toBe(367);
 
       // Channel created on Dec 31, 2025 for Jan 1, 2026
-      const createdDec31 = new Date('2025-12-31T15:00:00Z');
+      const createdDec31 = new Date('2025-12-31T14:59:00Z');
       const jan2Ref = new Date('2026-01-02T03:00:00Z');
       expect(calculateDiffDays('使い捨て会話_01月01日', jan2Ref, createdDec31)).toBe(1);
+      const createdJan1 = new Date('2025-12-31T15:01:00Z');
+      expect(calculateDiffDays('使い捨て会話_12月31日', jan2Ref, createdJan1)).toBe(2);
     });
 
     it('should return negative values for future dates', () => {
@@ -145,6 +150,23 @@ describe('dateUtils', () => {
 
     it('should return null for invalid channel name', () => {
       expect(calculateDiffDays('random-channel', refDate)).toBeNull();
+    });
+
+    it('rejects impossible dates supplied as names or parts and respects a known creation year', () => {
+      const leapDay = '使い捨て会話_02月29日';
+      const march2025 = new Date('2025-03-01T00:00:00+09:00');
+      const march2026 = new Date('2026-03-01T00:00:00+09:00');
+      expect(calculateDiffDays({ month: 4, day: 31 }, refDate)).toBeNull();
+      expect(calculateDiffDays({ month: 1.5, day: 1 }, refDate)).toBeNull();
+      expect(calculateDiffDays(leapDay, march2025, march2025)).toBeNull();
+      expect(calculateDiffDays(leapDay, march2026)).toBeNull();
+      expect(calculateDiffDays(leapDay, march2025)).toBe(366);
+      expect(calculateDiffDays(leapDay, march2025, new Date('2024-02-29T00:00:00+09:00'))).toBe(366);
+      expect(calculateDiffDays({ ...getJSTParts(new Date('2025-11-12T00:00:00+09:00')) }, refDate)).toBe(0);
+    });
+
+    it('uses the previous year when a date without metadata is exactly 14 days ahead', () => {
+      expect(calculateDiffDays('使い捨て会話_11月26日', refDate)).toBe(351);
     });
   });
 

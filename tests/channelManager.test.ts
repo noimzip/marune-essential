@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { ChannelType, MessageFlags, PermissionFlagsBits, type Guild } from 'discord.js';
 import { runLifecycleForGuild, BUTTON_IDS } from '../src/services/channelManager.js';
 
 describe('channelManager (runLifecycleForGuild)', () => {
@@ -250,5 +250,91 @@ describe('channelManager (runLifecycleForGuild)', () => {
     expect(result.createdChannelName).toBe('使い捨て会話_11月12日');
     expect(mockChannelCreate).not.toHaveBeenCalled();
     expect(result.skippedChannels).toContain('使い捨て会話_11月12日');
+  });
+
+  describe('JST channel identity', () => {
+    const reference = new Date('2026-02-09T00:00:00+09:00');
+
+    function makeChannel(id: string, name: string, createdAt: Date, topic?: string) {
+      return {
+        id,
+        name,
+        createdAt,
+        topic,
+        parentId: categoryId,
+        type: ChannelType.GuildText,
+        send: vi.fn().mockResolvedValue({}),
+        delete: vi.fn().mockResolvedValue({}),
+      };
+    }
+
+    function makeGuild(...channels: ReturnType<typeof makeChannel>[]) {
+      const createdChannel = makeChannel('new', '使い捨て会話_02月09日', reference);
+      const guild = {
+        id: 'date-test-guild',
+        members: { me: { permissions: { has: () => true } } },
+        channels: {
+          fetch: vi.fn().mockResolvedValue(new Map<string, object>([
+            [categoryId, { id: categoryId, type: ChannelType.GuildCategory }],
+            ...channels.map((channel): [string, object] => [channel.id, channel]),
+          ])),
+          create: vi.fn().mockResolvedValue(createdChannel),
+        },
+      };
+      return { guild, createdChannel };
+    }
+
+    it('recognizes the existing current channel with a hyphen and unpadded date', async () => {
+      const channel = makeChannel('current', '使い捨て会話-2月9日', reference);
+      const { guild } = makeGuild(channel);
+
+      const result = await runLifecycleForGuild(guild as unknown as Guild, categoryId, reference);
+
+      expect(result.created).toBe(false);
+      expect(result.todayChannel).toBe(channel);
+      expect(guild.channels.create).not.toHaveBeenCalled();
+      expect(channel.delete).not.toHaveBeenCalled();
+    });
+
+    it('creates today before deleting an identically named channel from last year', async () => {
+      const channel = makeChannel('old', '使い捨て会話_02月09日', new Date('2025-02-09T00:00:00+09:00'));
+      const { guild, createdChannel } = makeGuild(channel);
+
+      const result = await runLifecycleForGuild(guild as unknown as Guild, categoryId, reference, {
+        createTopic: 'scheduled-post',
+      });
+
+      expect(result.created).toBe(true);
+      expect(result.todayChannel).toBe(createdChannel);
+      expect(guild.channels.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        topic: 'scheduled-post',
+      }));
+      expect(channel.delete).toHaveBeenCalledOnce();
+    });
+
+    it('returns the existing channel with the requested topic when today has multiple channels', async () => {
+      const manual = makeChannel('manual', '使い捨て会話_02月09日', reference, 'manual topic');
+      const scheduled = makeChannel('scheduled', '使い捨て会話-2月9日', reference, 'scheduled-post');
+      const { guild } = makeGuild(manual, scheduled);
+
+      const result = await runLifecycleForGuild(guild as unknown as Guild, categoryId, reference, {
+        createTopic: 'scheduled-post',
+      });
+
+      expect(result.todayChannel).toBe(scheduled);
+      expect(guild.channels.create).not.toHaveBeenCalled();
+    });
+
+    it('skips both confirmation and automated deletion for February 30', async () => {
+      const channel = makeChannel('invalid', '使い捨て会話_02月30日', reference);
+      const { guild } = makeGuild(channel);
+
+      await runLifecycleForGuild(
+        guild as unknown as Guild, categoryId, new Date('2026-03-20T00:00:00+09:00')
+      );
+
+      expect(channel.send).not.toHaveBeenCalled();
+      expect(channel.delete).not.toHaveBeenCalled();
+    });
   });
 });

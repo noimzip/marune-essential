@@ -9,6 +9,25 @@ export interface JSTDateParts {
   day: number;
 }
 
+type MonthDay = Pick<JSTDateParts, 'month' | 'day'>;
+
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+// Before resolving a year, allow February 29 as a possible channel date.
+function isValidMonthDay({ month, day }: MonthDay, year = 2000): boolean {
+  if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(day)) {
+    return false;
+  }
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = month === 2 && leapYear ? 29 : MONTH_LENGTHS[month - 1];
+  return day >= 1 && day <= daysInMonth;
+}
+
+function getCalendarDay({ year, month, day }: JSTDateParts): number {
+  return Date.UTC(year, month - 1, day) / MILLISECONDS_PER_DAY;
+}
+
 /**
  * Returns year, month, and day in JST (Asia/Tokyo) for a given Date.
  */
@@ -44,23 +63,15 @@ export function formatChannelName(date: Date = new Date()): string {
  *  - 使い捨て会話_M月D日 or 使い捨て会話-M月D日 (e.g. 使い捨て会話_1月5日)
  * Returns null if the name does not match or represents an invalid month/day.
  */
-export function parseChannelName(channelName: string): { month: number; day: number } | null {
+export function parseChannelName(channelName: string): MonthDay | null {
   const match = channelName.match(/^使い捨て会話[_-](\d{1,2})月(\d{1,2})日$/);
   if (!match) {
     return null;
   }
 
-  const month = parseInt(match[1], 10);
-  const day = parseInt(match[2], 10);
-
-  if (month < 1 || month > 12 || day < 1 || day > 31) {
-    return null;
-  }
-
-  return { month, day };
+  const parts = { month: Number(match[1]), day: Number(match[2]) };
+  return isValidMonthDay(parts) ? parts : null;
 }
-
-const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 
 /**
  * Calculates the elapsed days between the channel's date and the reference date (in JST).
@@ -74,71 +85,47 @@ const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 
  *
  * Supports optional channelCreatedAt to resolve the exact year directly from Discord channel metadata.
  * Handles year boundaries (e.g. Reference is Jan 2027, channel is Dec 31).
- * Returns null if channel name cannot be parsed.
+ * Returns null if the name cannot be parsed or the resulting date does not exist.
  */
 export function calculateDiffDays(
-  channelInput: string | { month: number; day: number },
+  channelInput: string | MonthDay,
   referenceDate: Date = new Date(),
   channelCreatedAt?: Date
 ): number | null {
-  let parsed: { month: number; day: number } | null;
-  if (typeof channelInput === 'string') {
-    parsed = parseChannelName(channelInput);
-  } else {
-    parsed = channelInput;
-  }
-
-  if (!parsed) {
+  const parsed = typeof channelInput === 'string' ? parseChannelName(channelInput) : channelInput;
+  if (!parsed || !isValidMonthDay(parsed)) {
     return null;
   }
 
-  const { month, day } = parsed;
   const refParts = getJSTParts(referenceDate);
-
+  const refDay = getCalendarDay(refParts);
   let candidateYear = refParts.year;
 
   if (channelCreatedAt) {
     const createdParts = getJSTParts(channelCreatedAt);
-    // If created late Dec for Jan 1st channel
-    if (createdParts.month === 12 && month === 1) {
+    if (createdParts.month === 12 && parsed.month === 1) {
       candidateYear = createdParts.year + 1;
-    } else if (createdParts.month === 1 && month === 12) {
+    } else if (createdParts.month === 1 && parsed.month === 12) {
       candidateYear = createdParts.year - 1;
     } else {
       candidateYear = createdParts.year;
     }
   } else {
-    // If no channelCreatedAt provided (e.g. in unit tests or string inputs),
-    // check if candidate date in the reference year is > 14 days in the future.
-    // A disposable channel is never scheduled more than 14 days in advance,
-    // so any date > 14 days ahead belongs to the previous year.
-    let candYear = refParts.year;
-    if (month === 2 && day === 29 && !isLeapYear(candYear) && isLeapYear(candYear - 1)) {
-      candYear -= 1;
-    }
-    const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
-    const candMidCurrentYear = Date.UTC(candYear, month - 1, day);
-    const diffCurrentYear = Math.round((refMid - candMidCurrentYear) / (24 * 60 * 60 * 1000));
-
-    if (diffCurrentYear < -14) {
-      candidateYear = refParts.year - 1;
-    } else {
-      candidateYear = refParts.year;
-    }
-  }
-
-  // Handle Feb 29 leap year check for candidateYear
-  if (month === 2 && day === 29 && !isLeapYear(candidateYear)) {
-    if (isLeapYear(candidateYear - 1)) {
+    // Without metadata, use the previous year if February 29 is unavailable or
+    // the named date in the reference year is at least 14 days ahead.
+    if (
+      !isValidMonthDay(parsed, candidateYear) ||
+      getCalendarDay({ ...parsed, year: candidateYear }) - refDay >= 14
+    ) {
       candidateYear -= 1;
     }
   }
 
-  const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
-  const candMid = Date.UTC(candidateYear, month - 1, day);
+  if (!isValidMonthDay(parsed, candidateYear)) {
+    return null;
+  }
 
-  const diffMs = refMid - candMid;
-  return Math.round(diffMs / (24 * 60 * 60 * 1000));
+  return refDay - getCalendarDay({ ...parsed, year: candidateYear });
 }
 
 /**
@@ -165,5 +152,5 @@ export function calculateElapsedDays(
   const targetMid = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day);
   const refMid = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
 
-  return Math.round((refMid - targetMid) / (24 * 60 * 60 * 1000));
+  return (refMid - targetMid) / MILLISECONDS_PER_DAY;
 }

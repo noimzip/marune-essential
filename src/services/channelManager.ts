@@ -6,7 +6,6 @@ import {
   Client,
   Guild,
   MessageFlags,
-  NewsChannel,
   PermissionFlagsBits,
   TextChannel,
 } from 'discord.js';
@@ -21,11 +20,16 @@ export const BUTTON_IDS = {
 export interface LifecycleResult {
   created: boolean;
   createdChannel: TextChannel | null;
+  todayChannel: TextChannel | null;
   createdChannelName: string;
   confirmSentChannels: string[];
   deletedChannels: string[];
   skippedChannels: string[];
   errors: string[];
+}
+
+interface LifecycleOptions {
+  createTopic?: string;
 }
 
 /**
@@ -37,7 +41,8 @@ export interface LifecycleResult {
  */
 export async function runDailyLifecycle(
   client: Client,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  options: LifecycleOptions = {}
 ): Promise<LifecycleResult> {
   const config = getConfig();
   const guild = await client.guilds.fetch(config.GUILD_ID);
@@ -46,7 +51,7 @@ export async function runDailyLifecycle(
     throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
   }
 
-  return runLifecycleForGuild(guild, config.CATEGORY_ID, referenceDate);
+  return runLifecycleForGuild(guild, config.CATEGORY_ID, referenceDate, options);
 }
 
 /**
@@ -55,11 +60,13 @@ export async function runDailyLifecycle(
 export async function runLifecycleForGuild(
   guild: Guild,
   categoryId: string,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  options: LifecycleOptions = {}
 ): Promise<LifecycleResult> {
   const result: LifecycleResult = {
     created: false,
     createdChannel: null,
+    todayChannel: null,
     createdChannelName: '',
     confirmSentChannels: [],
     deletedChannels: [],
@@ -93,16 +100,20 @@ export async function runLifecycleForGuild(
   result.createdChannelName = todayChannelName;
 
   // Filter text channels under the target category
-  const allChannelsList = Array.from(allChannels.values());
-  const targetChannels = allChannelsList.filter(
-    (ch): ch is TextChannel =>
-      ch !== null &&
-      ch.parentId === categoryId &&
-      ch.type === ChannelType.GuildText
-  );
+  const targetChannels = Array.from(allChannels.values())
+    .filter((channel): channel is TextChannel =>
+      channel !== null && channel.parentId === categoryId && channel.type === ChannelType.GuildText)
+    .map((channel) => ({
+      channel,
+      diffDays: calculateDiffDays(channel.name, referenceDate, channel.createdAt),
+    }));
 
   // 1. Create today's channel if it doesn't exist
-  const existingToday = targetChannels.find((ch) => ch.name === todayChannelName);
+  const currentChannels = targetChannels.filter(({ diffDays }) => diffDays === 0);
+  const preferredChannel = options.createTopic === undefined
+    ? undefined
+    : currentChannels.find(({ channel }) => channel.topic === options.createTopic);
+  const existingToday = preferredChannel ?? currentChannels[0];
   if (!existingToday) {
     try {
       const newChannel = await guild.channels.create({
@@ -110,9 +121,11 @@ export async function runLifecycleForGuild(
         type: ChannelType.GuildText,
         parent: categoryId,
         reason: '毎日0:00の使い捨て会話チャンネル自動生成',
+        ...(options.createTopic === undefined ? {} : { topic: options.createTopic }),
       });
       result.created = true;
       result.createdChannel = newChannel;
+      result.todayChannel = newChannel;
 
       try {
         await newChannel.send({
@@ -135,13 +148,12 @@ export async function runLifecycleForGuild(
       result.errors.push(errMsg);
     }
   } else {
-    console.log(`[ChannelManager] Today channel #${todayChannelName} already exists, skipping creation.`);
+    result.todayChannel = existingToday.channel;
+    console.log(`[ChannelManager] Today channel #${existingToday.channel.name} already exists, skipping creation.`);
   }
 
   // 2. Iterate through channels in category and manage past disposable channels
-  for (const channel of targetChannels) {
-    const diffDays = calculateDiffDays(channel.name, referenceDate, channel.createdAt);
-
+  for (const { channel, diffDays } of targetChannels) {
     // Skip channels not matching naming scheme or created today / future
     if (diffDays === null || diffDays <= 0) {
       result.skippedChannels.push(channel.name);
