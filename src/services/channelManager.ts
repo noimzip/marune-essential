@@ -10,6 +10,7 @@ import {
   TextChannel,
 } from 'discord.js';
 import { getConfig } from '../config.js';
+import { runExclusiveBatch } from '../utils/batchExecution.js';
 import { calculateDiffDays, formatChannelName } from '../utils/dateUtils.js';
 
 export const BUTTON_IDS = {
@@ -32,6 +33,10 @@ interface LifecycleOptions {
   createTopic?: string;
 }
 
+function dailyBatchKey(guildId: string): string {
+  return `daily-lifecycle:${guildId}`;
+}
+
 /**
  * Executes the daily lifecycle for disposable channels in the target category:
  * 1. Creates today's channel (使い捨て会話_MM月DD日) if it doesn't exist.
@@ -45,13 +50,15 @@ export async function runDailyLifecycle(
   options: LifecycleOptions = {}
 ): Promise<LifecycleResult> {
   const config = getConfig();
-  const guild = await client.guilds.fetch(config.GUILD_ID);
+  return runExclusiveBatch(dailyBatchKey(config.GUILD_ID), async () => {
+    const guild = await client.guilds.fetch(config.GUILD_ID);
 
-  if (!guild) {
-    throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
-  }
+    if (!guild) {
+      throw new Error(`Guild with ID ${config.GUILD_ID} not found.`);
+    }
 
-  return runLifecycleForGuild(guild, config.CATEGORY_ID, referenceDate, options);
+    return executeDailyLifecycle(guild, config.CATEGORY_ID, referenceDate, options);
+  });
 }
 
 /**
@@ -62,6 +69,16 @@ export async function runLifecycleForGuild(
   categoryId: string,
   referenceDate: Date = new Date(),
   options: LifecycleOptions = {}
+): Promise<LifecycleResult> {
+  return runExclusiveBatch(dailyBatchKey(guild.id), () =>
+    executeDailyLifecycle(guild, categoryId, referenceDate, options));
+}
+
+async function executeDailyLifecycle(
+  guild: Guild,
+  categoryId: string,
+  referenceDate: Date,
+  options: LifecycleOptions
 ): Promise<LifecycleResult> {
   const result: LifecycleResult = {
     created: false,
