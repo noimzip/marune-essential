@@ -11,7 +11,6 @@ import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
 import { kadaiCommand } from './commands/kadai.js';
 import { testForumCleanupCommand } from './commands/testForumCleanup.js';
 import type { Cron } from 'croner';
-import type { Server } from 'node:http';
 
 async function main() {
   console.log('[App] Starting Disposable Channels Discord Bot...');
@@ -25,11 +24,10 @@ async function main() {
     ],
   });
 
-  let healthServer: Server | null = null;
   let cronJob: Cron | null = null;
 
   // 1. Start HTTP health check server immediately for Railway / Render
-  healthServer = startHealthServer({
+  const healthServer = await startHealthServer({
     port: config.PORT,
     client,
   });
@@ -81,10 +79,8 @@ async function main() {
       cronJob.stop();
     }
 
-    if (healthServer) {
-      console.log('[App] Closing health check HTTP server...');
-      healthServer.close();
-    }
+    console.log('[App] Closing health check HTTP server...');
+    healthServer.close();
 
     try {
       console.log('[App] Destroying Discord client...');

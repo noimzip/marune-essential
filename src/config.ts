@@ -9,7 +9,7 @@ export const configSchema = z.object({
   CATEGORY_ID: z.string().min(1, 'CATEGORY_ID is required'),
   EXCLUDED_FORUM_IDS: z.string().default(''),
   FORUM_INACTIVE_DAYS: z.coerce.number().int().min(1).default(21),
-  PORT: z.coerce.number().default(8080),
+  PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   TZ: z.string().default('Asia/Tokyo'),
 });
 
