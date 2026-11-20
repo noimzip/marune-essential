@@ -182,7 +182,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       name: '使い捨て会話_11月12日',
       type: ChannelType.GuildText,
       parent: categoryId,
-      reason: '毎日0:00の使い捨て会話チャンネル自動生成',
+      reason: '当日の使い捨て会話チャンネル自動生成',
     });
 
     // 2. Sent deletion confirmation to 1-day and 3-day old channels

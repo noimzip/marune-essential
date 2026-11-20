@@ -134,8 +134,6 @@ export function startAssignmentPosting(client: Client) {
     }
   }
 
-  void post(new Date());
-
   return {
     post,
     stop() {

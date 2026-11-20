@@ -38,6 +38,8 @@ export interface LifecycleResult {
 
 interface LifecycleOptions {
   createTopic?: string;
+  createOnly?: boolean;
+  canCreate?: () => boolean;
 }
 
 function dailyBatchKey(guildId: string): string {
@@ -214,12 +216,13 @@ async function executeDailyLifecycle(
     : currentChannels.find(({ channel }) => channel.topic === options.createTopic);
   const existingToday = preferredChannel ?? currentChannels[0];
   if (!existingToday) {
+    if (options.canCreate?.() === false) return result;
     try {
       const newChannel = await guild.channels.create({
         name: todayChannelName,
         type: ChannelType.GuildText,
         parent: categoryId,
-        reason: '毎日0:00の使い捨て会話チャンネル自動生成',
+        reason: '当日の使い捨て会話チャンネル自動生成',
         ...(options.createTopic === undefined ? {} : { topic: options.createTopic }),
       });
       result.created = true;
@@ -230,7 +233,7 @@ async function executeDailyLifecycle(
         await newChannel.send({
           content:
             `📢 **本日の使い捨て会話チャンネルです** (#${todayChannelName})\n` +
-            `このチャンネルは毎日 00:00 (JST) に自動生成されます。\n` +
+            `このチャンネルは毎日 00:00 (JST) の定期処理、または起動後の補完処理で自動生成されます。\n` +
             `作成から1〜6日経過時に削除確認メッセージが送信され、**7日経過で自動削除**されます。\n` +
             `自由にご利用ください！`,
           flags: [MessageFlags.SuppressNotifications],
@@ -250,6 +253,8 @@ async function executeDailyLifecycle(
     result.todayChannel = existingToday.channel;
     console.log(`[ChannelManager] Today channel #${existingToday.channel.name} already exists, skipping creation.`);
   }
+
+  if (options.createOnly) return result;
 
   const { year, month, day } = getJSTParts(referenceDate);
   const dayStart = Date.UTC(year, month - 1, day, -JST_OFFSET_HOURS);

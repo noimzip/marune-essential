@@ -115,8 +115,28 @@ afterEach(() => {
 });
 
 describe('WebClass assignments on Discord', () => {
+  it('posts assignments to the current channel created at startup after missing midnight', async () => {
+    const noon = new Date('2026-11-19T12:00:00+09:00');
+    vi.setSystemTime(noon);
+    const { client, create, today, todaySend, pastSend } = mockDiscord();
+    const job = startDailyScheduler(client);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ topic: pendingTopic }));
+      expect(getUpcomingAssignments).toHaveBeenCalledExactlyOnceWith(noon, true);
+      expect(todaySend).toHaveBeenCalledTimes(2);
+      expect(today.topic).toBe(publishedTopic);
+      expect(pastSend).not.toHaveBeenCalled();
+      expect(runForumCleanup).not.toHaveBeenCalled();
+    } finally {
+      job.stop();
+    }
+  });
+
   it('skips assignment posting for both newly created channels and pending channels when WebClass is disabled', async () => {
     setConfig(configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild', CATEGORY_ID: 'category' }));
+    vi.setSystemTime(new Date('2026-11-19T12:00:00+09:00'));
     const { client, create, today, todaySend, readHistory } = mockDiscord();
     const job = startDailyScheduler(client);
     try {
