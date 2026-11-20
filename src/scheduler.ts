@@ -1,5 +1,6 @@
 import { Cron } from 'croner';
 import type { Client } from 'discord.js';
+import { getConfig } from './config.js';
 import { runDailyLifecycle } from './services/channelManager.js';
 import { runForumCleanup } from './services/forumManager.js';
 import { pendingAssignmentTopic, startAssignmentPosting } from './services/assignmentPosting.js';
@@ -12,7 +13,7 @@ export interface DailyScheduler {
 export function startDailyScheduler(client: Client): DailyScheduler {
   console.log('[Scheduler] Initializing daily lifecycle cron job at 00:00:00 JST...');
 
-  const assignmentPosting = startAssignmentPosting(client);
+  const assignmentPosting = getConfig().WEBCLASS_ENABLED ? startAssignmentPosting(client) : null;
   const job = new Cron(
     '0 0 0 * * *',
     {
@@ -28,7 +29,7 @@ export function startDailyScheduler(client: Client): DailyScheduler {
       // 1. Disposable daily channel lifecycle
       try {
         const result = await runDailyLifecycle(client, referenceDate, {
-          createTopic: pendingAssignmentTopic(referenceDate),
+          createTopic: assignmentPosting ? pendingAssignmentTopic(referenceDate) : undefined,
         });
         console.log(
           `[Scheduler] Disposable channel batch finished.\n` +
@@ -37,7 +38,7 @@ export function startDailyScheduler(client: Client): DailyScheduler {
             `  - Deleted: ${result.deletedChannels.length} (${result.deletedChannels.join(', ') || 'none'})\n` +
             `  - Errors: ${result.errors.length}`
         );
-        void assignmentPosting.post(referenceDate, result.todayChannel, result.created);
+        void assignmentPosting?.post(referenceDate, result.todayChannel, result.created);
       } catch (error) {
         console.error('[Scheduler] Failed to execute daily channel lifecycle:', error);
       }
@@ -69,7 +70,7 @@ export function startDailyScheduler(client: Client): DailyScheduler {
     nextRun: () => job.nextRun(),
     stop() {
       job.stop();
-      assignmentPosting.stop();
+      assignmentPosting?.stop();
     },
   };
 }

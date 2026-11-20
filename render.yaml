@@ -15,6 +15,8 @@ services:
         value: ""
       - key: FORUM_INACTIVE_DAYS
         value: "21"
+      - key: WEBCLASS_ENABLED
+        value: "false"
       - key: TZ
         value: Asia/Tokyo
     healthCheckPath: /healthz

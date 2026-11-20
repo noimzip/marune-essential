@@ -38,7 +38,7 @@ async function main() {
     try {
       const guild = await readyClient.guilds.fetch(config.GUILD_ID);
       if (guild) {
-        const commands = getGuildCommandDefinitions();
+        const commands = getGuildCommandDefinitions(config);
         await guild.commands.set(commands);
         const commandNames = commands.map(({ name }) => `/${name}`).join(', ');
         console.log(

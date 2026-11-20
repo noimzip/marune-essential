@@ -90,7 +90,9 @@ function mockDiscord(existingToday = false, existingTopic: string | null = null,
 }
 
 beforeEach(() => {
-  setConfig(configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild', CATEGORY_ID: 'category' }));
+  setConfig(configSchema.parse({
+    DISCORD_TOKEN: 'test', GUILD_ID: 'guild', CATEGORY_ID: 'category', WEBCLASS_ENABLED: 'true',
+  }));
   vi.mocked(getUpcomingAssignments).mockResolvedValue(assignments);
   vi.mocked(runForumCleanup).mockResolvedValue({
     inspectedForumCount: 0,
@@ -113,6 +115,33 @@ afterEach(() => {
 });
 
 describe('WebClass assignments on Discord', () => {
+  it('skips assignment posting for both newly created channels and pending channels when WebClass is disabled', async () => {
+    setConfig(configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild', CATEGORY_ID: 'category' }));
+    const { client, create, today, todaySend, readHistory } = mockDiscord();
+    const job = startDailyScheduler(client);
+    try {
+      await vi.advanceTimersByTimeAsync(WEBCLASS_RETRY_INTERVAL_MS);
+      expect(create).toHaveBeenCalledOnce();
+      expect(today.topic).toBeNull();
+      expect(todaySend).toHaveBeenCalledOnce();
+      expect(getUpcomingAssignments).not.toHaveBeenCalled();
+    } finally {
+      job.stop();
+    }
+
+    today.topic = pendingTopic;
+    const restartedJob = startDailyScheduler(client);
+    try {
+      await vi.advanceTimersByTimeAsync(WEBCLASS_RETRY_INTERVAL_MS);
+      expect(readHistory).not.toHaveBeenCalled();
+      expect(getUpcomingAssignments).not.toHaveBeenCalled();
+      expect(todaySend).toHaveBeenCalledOnce();
+      expect(today.topic).toBe(pendingTopic);
+    } finally {
+      restartedJob.stop();
+    }
+  });
+
   it('posts a silent numbered list only in the newly created channel at JST midnight', async () => {
     const { client, create, today, todaySend, pastSend } = mockDiscord();
     const job = startDailyScheduler(client);

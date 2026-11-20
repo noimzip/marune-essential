@@ -12,6 +12,7 @@ services:
       - CATEGORY_ID=${CATEGORY_ID}
       - EXCLUDED_FORUM_IDS=${EXCLUDED_FORUM_IDS:-}
       - FORUM_INACTIVE_DAYS=${FORUM_INACTIVE_DAYS:-21}
+      - WEBCLASS_ENABLED=${WEBCLASS_ENABLED:-false}
       - PORT=8080
       - TZ=Asia/Tokyo
     env_file:

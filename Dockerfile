@@ -18,6 +18,7 @@ WORKDIR /app
 RUN apk add --no-cache tzdata
 ENV TZ=Asia/Tokyo
 ENV NODE_ENV=production
+ENV WEBCLASS_ENABLED=false
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
