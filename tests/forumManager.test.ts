@@ -573,6 +573,68 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(result.targets.map((target) => target.threadId)).toEqual([archivedThread.id]);
   });
 
+  it.each([
+    { failingPage: 1, problem: 'request failure' },
+    { failingPage: 2, problem: 'request failure' },
+    { failingPage: 2, problem: 'repeated cursor' },
+  ])('inspects available threads with a $problem on archived page $failingPage', async ({ failingPage, problem }) => {
+    const makeThread = (id: string, parentId: string, archived = false) => ({
+      id,
+      name: id,
+      parentId,
+      createdAt: daysAgo(30),
+      archived,
+      archivedAt: archived ? daysAgo(25) : null,
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+    });
+    const active = makeThread('affected-active', 'forum-1');
+    const archived = makeThread('affected-archived', 'forum-1', true);
+    const other = makeThread('other-forum-archived', 'forum-2', true);
+    const fetchArchived = vi.fn();
+    const archivedPage = { threads: new Map([[archived.id, archived]]), hasMore: true };
+    if (failingPage === 2) {
+      fetchArchived.mockResolvedValueOnce(archivedPage);
+    }
+    const failureReason = problem === 'repeated cursor'
+      ? 'Discord did not provide an earlier archive timestamp'
+      : 'archive list unavailable';
+    if (problem === 'repeated cursor') {
+      fetchArchived.mockResolvedValue(archivedPage);
+    } else {
+      fetchArchived.mockRejectedValueOnce(new Error(failureReason));
+    }
+    const forums = [
+      { id: 'forum-1', name: 'affected-forum', threads: { fetchArchived } },
+      {
+        id: 'forum-2',
+        name: 'other-forum',
+        threads: {
+          fetchArchived: vi.fn().mockResolvedValue({ threads: new Map([[other.id, other]]), hasMore: false }),
+        },
+      },
+    ].map((forum) => ({ ...forum, type: ChannelType.GuildForum, permissionsFor: () => ({ has: () => true }) }));
+    const guild = {
+      members: { me: { id: 'bot-1' } },
+      channels: {
+        fetch: vi.fn().mockResolvedValue(new Map(forums.map((forum) => [forum.id, forum]))),
+        fetchActiveThreads: vi.fn().mockResolvedValue({ threads: new Map([[active.id, active]]) }),
+      },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    const result = await runForumCleanupForGuild(guild, { dryRun: true, referenceDate: refDate });
+
+    const expectedIds = failingPage === 2 ? [active.id, archived.id, other.id] : [active.id, other.id];
+    expect(result.targets.map(({ threadId }) => threadId)).toEqual(expectedIds);
+    expect(result.inspectedThreadCount).toBe(expectedIds.length);
+    expect(result.errors).toEqual([expect.stringMatching(
+      new RegExp(`archived threads.*page ${failingPage}.*affected-forum.*forum-1.*${failureReason}`)
+    )]);
+    expect(fetchArchived).toHaveBeenCalledTimes(failingPage);
+    if (failingPage === 2) {
+      expect(fetchArchived).toHaveBeenNthCalledWith(2, { type: 'public', limit: 100, before: archived.archivedAt });
+    }
+  });
+
   it('records error and continues when a forum lacks required permissions', async () => {
     const forumNoPerm: any = {
       id: 'forum-noperm',

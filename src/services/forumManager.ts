@@ -104,60 +104,68 @@ export function classifyForumBotMessage(
 }
 
 /**
- * Fetches all active and archived public threads for a forum channel with pagination.
+ * Collects the available active and archived threads even if part of the listing fails.
  */
 async function collectForumThreads(
   forum: ForumChannel,
   preFetchedActive?: ThreadChannel[]
-): Promise<ThreadChannel[]> {
+): Promise<{ threads: ThreadChannel[]; errors: string[] }> {
   const threadMap = new Map<string, ThreadChannel>();
+  const errors: string[] = [];
+
+  function recordFetchFailure(part: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `Failed to fetch ${part} in #${forum.name} (${forum.id}): ${detail}`;
+    errors.push(message);
+    console.error(`[ForumManager] ${message}`, error);
+  }
 
   if (preFetchedActive) {
     for (const thread of preFetchedActive) {
       threadMap.set(thread.id, thread);
     }
   } else if (typeof forum.threads?.fetchActive === 'function') {
-    const activeResult = await forum.threads.fetchActive();
-    for (const thread of activeResult.threads.values()) {
-      threadMap.set(thread.id, thread);
+    try {
+      const activeResult = await forum.threads.fetchActive();
+      for (const thread of activeResult.threads.values()) {
+        threadMap.set(thread.id, thread);
+      }
+    } catch (error) {
+      recordFetchFailure('active threads', error);
     }
   }
 
   if (typeof forum.threads?.fetchArchived === 'function') {
-    let before: Date | string | undefined;
-    let hasMore = true;
+    let before: Date | undefined;
+    let page = 1;
+    try {
+      while (true) {
+        const archivedResult = await forum.threads.fetchArchived({
+          type: 'public',
+          limit: 100,
+          ...(before ? { before } : {}),
+        });
 
-    while (hasMore) {
-      const archivedResult = await forum.threads.fetchArchived({
-        type: 'public',
-        limit: 100,
-        ...(before !== undefined ? { before } : {}),
-      });
-
-      const batch = Array.from(archivedResult.threads.values());
-      if (batch.length === 0) {
-        break;
-      }
-
-      for (const thread of batch) {
-        threadMap.set(thread.id, thread);
-      }
-
-      hasMore = Boolean(archivedResult.hasMore);
-      if (hasMore) {
-        const lastThread = batch[batch.length - 1];
-        const nextCursor = lastThread.archivedAt ?? lastThread.id;
-        const nextKey = nextCursor instanceof Date ? nextCursor.toISOString() : String(nextCursor);
-        const prevKey = before instanceof Date ? before.toISOString() : before ? String(before) : undefined;
-        if (!nextCursor || nextKey === prevKey) {
-          break;
+        const batch = Array.from(archivedResult.threads.values());
+        for (const thread of batch) {
+          threadMap.set(thread.id, thread);
         }
+        if (!archivedResult.hasMore) break;
+
+        const nextCursor = batch.at(-1)?.archivedAt;
+        if (!nextCursor || !Number.isFinite(nextCursor.getTime()) || (before && nextCursor >= before)) {
+          throw new Error('Discord did not provide an earlier archive timestamp for the next page.');
+        }
+
         before = nextCursor;
+        page++;
       }
+    } catch (error) {
+      recordFetchFailure(`archived threads (page ${page})`, error);
     }
   }
 
-  return Array.from(threadMap.values());
+  return { threads: Array.from(threadMap.values()), errors };
 }
 
 interface ThreadActivityInspection {
@@ -373,16 +381,9 @@ export async function runForumCleanupForGuild(
 
     result.inspectedForumCount++;
 
-    let threads: ThreadChannel[];
-    try {
-      const active = activeByParent ? activeByParent.get(forum.id) ?? [] : undefined;
-      threads = await collectForumThreads(forum, active);
-    } catch (fetchErr: any) {
-      const errMsg = `Failed to fetch threads in #${forum.name}: ${fetchErr.message ?? fetchErr}`;
-      console.error(`[ForumManager] ${errMsg}`, fetchErr);
-      result.errors.push(errMsg);
-      continue;
-    }
+    const active = activeByParent ? activeByParent.get(forum.id) ?? [] : undefined;
+    const { threads, errors } = await collectForumThreads(forum, active);
+    result.errors.push(...errors);
 
     for (const thread of threads) {
       result.inspectedThreadCount++;
