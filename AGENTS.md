@@ -56,7 +56,7 @@ npm run build  # tsc による型チェックと dist/ ビルド (src/**/* の�
 
 ### 4. 設定とコマンド登録 (`src/config.ts`, `src/index.ts`)
 - **遅延設定パース**: `src/config.ts` は `getConfig()` 初回呼び出し時に `process.env` を Zod 検証してキャッシュする。テストでモジュールをインポートしただけでクラッシュしないよう、トップレベルで `getConfig()` を呼ばないこと（注入には `setConfig()` を使う）。
-- **ギルドコマンドの一括置換**: `ClientReady` 時に `guild.commands.set([dailyBatchRunCommand.toJSON(), testForumCleanupCommand.toJSON()])` でコマンドを上書き登録している。スラッシュコマンドを増やす場合はこの配列に追加する。
+- **ギルドコマンドの一括置換**: `ClientReady` 時に `guild.commands.set(...)` で有効なコマンドを上書き登録する。コマンド定義と実行ハンドラーの対応は `src/commands/registry.ts` に追加する。登録、ログ、実行時の名前照合がこの定義を参照する。
 
 ### 5. 24/7 クラウド稼働契約 (`src/server.ts`, インフラ設定)
 - **ヘルスチェック仕様**: `railway.json` と `render.yaml` は `/healthz`（`PORT` デフォルト `8080`、`0.0.0.0` リッスン）を監視する。`client.isReady()` が `true` のとき HTTP `200`、起動中・未接続時は `503` を返す契約を維持する。

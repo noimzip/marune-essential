@@ -7,9 +7,7 @@ import { getConfig } from './config.js';
 import { startHealthServer } from './server.js';
 import { startDailyScheduler, type DailyScheduler } from './scheduler.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
-import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
-import { kadaiCommand } from './commands/kadai.js';
-import { forumCleanupStatusCommand, testForumCleanupCommand } from './commands/testForumCleanup.js';
+import { getGuildCommandDefinitions } from './commands/registry.js';
 
 async function main() {
   console.log('[App] Starting Disposable Channels Discord Bot...');
@@ -40,14 +38,11 @@ async function main() {
     try {
       const guild = await readyClient.guilds.fetch(config.GUILD_ID);
       if (guild) {
-        await guild.commands.set([
-          dailyBatchRunCommand.toJSON(),
-          testForumCleanupCommand.toJSON(),
-          forumCleanupStatusCommand.toJSON(),
-          kadaiCommand.toJSON(),
-        ]);
+        const commands = getGuildCommandDefinitions();
+        await guild.commands.set(commands);
+        const commandNames = commands.map(({ name }) => `/${name}`).join(', ');
         console.log(
-          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup, /forum_cleanup_status, /kadai) in guild '${guild.name}' (${guild.id})`
+          `[App] Successfully registered guild commands (${commandNames}) in guild '${guild.name}' (${guild.id})`
         );
       } else {
         console.warn(`[App] Guild ${config.GUILD_ID} not found. Skipping slash command registration.`);

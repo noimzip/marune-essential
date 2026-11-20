@@ -17,9 +17,7 @@ import {
   classifyForumBotMessage,
 } from '../services/forumManager.js';
 import { withTemporaryThreadUnarchive } from '../services/forumThreadArchive.js';
-import { handleDailyBatchRun } from '../commands/dailyBatchRun.js';
-import { handleKadai } from '../commands/kadai.js';
-import { forumCleanupStatusCommand, handleForumCleanupStatus, handleTestForumCleanup } from '../commands/testForumCleanup.js';
+import { dispatchSlashCommand } from '../commands/registry.js';
 
 const ALL_MANAGED_BUTTON_IDS = new Set<string>([
   BUTTON_IDS.CONFIRM_DELETE,
@@ -255,15 +253,7 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
   try {
     // 1. Handle Slash Commands
     if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === 'daily-batch-run') {
-        await handleDailyBatchRun(interaction);
-      } else if (interaction.commandName === 'test_forum_cleanup') {
-        await handleTestForumCleanup(interaction);
-      } else if (interaction.commandName === forumCleanupStatusCommand.name) {
-        await handleForumCleanupStatus(interaction);
-      } else if (interaction.commandName === 'kadai') {
-        await handleKadai(interaction);
-      }
+      await dispatchSlashCommand(interaction);
       return;
     }
 

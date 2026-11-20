@@ -186,6 +186,7 @@ marune-essential/
 │   │   └── interactionHandler.ts # スラッシュコマンド・ボタンインタラクション処理
 │   ├── commands/
 │   │   ├── dailyBatchRun.ts    # /daily-batch-run コマンド定義
+│   │   ├── registry.ts         # ギルドコマンドの登録と実行ハンドラーの対応
 │   │   └── testForumCleanup.ts # フォーラム検査と結果確認のコマンド定義
 │   └── utils/
 │       └── dateUtils.ts        # JST日付処理・差分日数判定・年跨ぎ/うるう年対応
