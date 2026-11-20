@@ -463,6 +463,115 @@ describe('forumManager (runForumCleanupForGuild)', () => {
     expect(thread.setArchived.mock.calls.map(([value]) => value)).toEqual(archived ? [false, true] : []);
   });
 
+  function makeArchiveRetryMocks() {
+    const confirmation = makeMockMessage({
+      id: 'confirmation',
+      createdAt: refDate,
+      bot: true,
+      content: FORUM_CONFIRM_MARKER,
+    });
+    const current = {
+      id: 'pending-close-thread',
+      name: 'pending-close-topic',
+      type: ChannelType.PublicThread,
+      parentId: 'forum-1',
+      archived: false,
+      archiveTimestamp: refDate.getTime() - 1000,
+      createdAt: daysAgo(30),
+      flags: { has: vi.fn().mockReturnValue(false) },
+      messages: { fetch: vi.fn().mockResolvedValue(new Map([[confirmation.id, confirmation]])) },
+      setArchived: vi.fn().mockResolvedValue(undefined),
+    };
+    const snapshot = {
+      ...current,
+      flags: { has: () => false },
+      messages: { fetch: vi.fn().mockResolvedValue(new Map([[confirmation.id, confirmation]])) },
+      setArchived: vi.fn().mockResolvedValue(undefined),
+      send: vi.fn().mockResolvedValue(confirmation),
+    };
+    const forum = {
+      id: 'forum-1',
+      name: 'retry-forum',
+      type: ChannelType.GuildForum,
+      permissionsFor: () => ({ has: () => true }),
+      threads: { fetchArchived: vi.fn().mockResolvedValue({ threads: new Map(), hasMore: false }) },
+    };
+    const fetchChannel = vi.fn((id?: string) =>
+      Promise.resolve(id ? current : new Map([[forum.id, forum]]))
+    );
+    const fetchActiveThreads = vi.fn().mockResolvedValue({ threads: new Map([[snapshot.id, snapshot]]) });
+    const guild = {
+      members: { me: { id: 'bot-1' } },
+      channels: { fetch: fetchChannel, fetchActiveThreads },
+    } as unknown as Parameters<typeof runForumCleanupForGuild>[0];
+
+    return { confirmation, current, snapshot, forum, fetchChannel, fetchActiveThreads, guild };
+  }
+
+  it('reports a failed close after a send, then retries the close from the confirmation without sending again', async () => {
+    const setup = makeArchiveRetryMocks();
+    const { snapshot, current, forum, guild, fetchActiveThreads, fetchChannel } = setup;
+    const originallyArchived = {
+      ...snapshot,
+      archived: true,
+      messages: { fetch: vi.fn().mockResolvedValue(new Map()) },
+      setArchived: vi.fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('temporary archive failure')),
+    };
+    fetchActiveThreads.mockResolvedValueOnce({ threads: new Map() });
+    forum.threads.fetchArchived.mockResolvedValueOnce({
+      threads: new Map([[originallyArchived.id, originallyArchived]]),
+      hasMore: false,
+    });
+
+    const first = await runForumCleanupForGuild(guild, { referenceDate: refDate, actionDelayMs: 0 });
+    expect(first.confirmSentThreads.map(({ threadId }) => threadId)).toEqual([snapshot.id]);
+    expect(first.errors).toEqual([expect.stringMatching(/archive.*pending-close-topic.*retry-forum.*temporary archive failure/i)]);
+    expect(originallyArchived.setArchived.mock.calls.map(([archived]) => archived)).toEqual([false, true]);
+
+    const nextDay = new Date(refDate.getTime() + 24 * 60 * 60 * 1000);
+    const second = await runForumCleanupForGuild(guild, { referenceDate: nextDay, actionDelayMs: 0 });
+
+    expect(second.confirmSentThreads).toEqual([]);
+    expect(second.errors).toEqual([]);
+    expect(snapshot.send).toHaveBeenCalledOnce();
+    expect(snapshot.setArchived).not.toHaveBeenCalled();
+    expect(fetchChannel).toHaveBeenCalledWith(current.id, { force: true });
+    expect(current.messages.fetch).toHaveBeenCalledWith({ limit: 1, cache: false });
+    expect(current.setArchived).toHaveBeenCalledExactlyOnceWith(true, expect.any(String));
+  });
+
+  it.each(['new post', 'pinned', 'kept', 'reopened', 'archived', 'moved'] as const)(
+    'skips retrying a close when the refreshed thread state is %s',
+    async (change) => {
+      const { current, snapshot, confirmation, fetchChannel, guild } = makeArchiveRetryMocks();
+      if (change === 'new post' || change === 'kept') {
+        const latest = change === 'new post'
+          ? makeMockMessage({ id: 'new-post', createdAt: new Date(refDate.getTime() + 1000) })
+          : { ...confirmation, content: FORUM_KEEP_MARKER };
+        current.messages.fetch.mockResolvedValue(new Map([[latest.id, latest]]));
+      } else if (change === 'pinned') {
+        current.flags.has.mockReturnValue(true);
+      } else if (change === 'reopened') {
+        current.archiveTimestamp = refDate.getTime() + 1000;
+      } else if (change === 'archived') {
+        current.archived = true;
+      } else {
+        current.parentId = 'another-forum';
+      }
+
+      const result = await runForumCleanupForGuild(guild, { referenceDate: refDate, actionDelayMs: 0 });
+
+      expect(fetchChannel).toHaveBeenCalledWith(current.id, { force: true });
+      expect(current.setArchived).not.toHaveBeenCalled();
+      expect(snapshot.setArchived).not.toHaveBeenCalled();
+      expect(snapshot.send).not.toHaveBeenCalled();
+      expect(result.confirmSentThreads).toEqual([]);
+      expect(result.errors).toEqual([]);
+    }
+  );
+
   it('does not send messages or unarchive threads when dryRun is true', async () => {
     const mockSend = vi.fn();
     const mockSetArchived = vi.fn();

@@ -11,13 +11,14 @@ export async function withTemporaryThreadUnarchive(
   thread: ThreadChannel,
   options: ArchiveOptions,
   action: () => Promise<unknown>,
-): Promise<void> {
+): Promise<{ error: unknown } | undefined> {
   const wasArchived = options.forceOpen || thread.archived === true;
   if (wasArchived) {
     await thread.setArchived(false, options.openReason);
   }
 
   let completed = false;
+  let archiveFailure: { error: unknown } | undefined;
   try {
     await action();
     completed = true;
@@ -29,8 +30,10 @@ export async function withTemporaryThreadUnarchive(
       try {
         await thread.setArchived(true, options.closeReason);
       } catch (error) {
+        archiveFailure = { error };
         console.warn(`[ForumArchive] Failed to archive thread #${thread.name} (${thread.id}):`, error);
       }
     }
   }
+  return archiveFailure;
 }

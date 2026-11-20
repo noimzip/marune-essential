@@ -171,6 +171,7 @@ async function collectForumThreads(
 interface ThreadActivityInspection {
   lastPostDate: Date;
   alreadyConfirmed: boolean;
+  latestConfirmation: Message | undefined;
 }
 
 /**
@@ -182,7 +183,7 @@ async function inspectThreadActivity(
   thresholdDays: number,
   referenceDate: Date
 ): Promise<ThreadActivityInspection> {
-  let latestBotCleanup: { kind: 'confirm' | 'keep'; actedAt: Date } | null = null;
+  let latestBotCleanup: { kind: 'confirm' | 'keep'; message: Message } | null = null;
   let lastHumanPostDate: Date | null = null;
   let beforeId: string | undefined;
 
@@ -205,10 +206,7 @@ async function inspectThreadActivity(
         const kind = classifyForumBotMessage(msg, botUserId);
         if (kind !== null) {
           if (!latestBotCleanup) {
-            latestBotCleanup = {
-              kind,
-              actedAt: kind === 'keep' ? msg.editedAt ?? msg.createdAt : msg.createdAt,
-            };
+            latestBotCleanup = { kind, message: msg };
           }
           continue;
         }
@@ -237,14 +235,53 @@ async function inspectThreadActivity(
       alreadyConfirmed = true;
     } else if (latestBotCleanup.kind === 'keep') {
       const keepGraceDays = Math.max(1, thresholdDays);
-      const keepElapsed = calculateElapsedDays(latestBotCleanup.actedAt, referenceDate);
+      const { editedAt, createdAt } = latestBotCleanup.message;
+      const keepElapsed = calculateElapsedDays(editedAt ?? createdAt, referenceDate);
       if (keepElapsed < keepGraceDays) {
         alreadyConfirmed = true;
       }
     }
   }
 
-  return { lastPostDate, alreadyConfirmed };
+  return {
+    lastPostDate,
+    alreadyConfirmed,
+    latestConfirmation: latestBotCleanup?.kind === 'confirm' ? latestBotCleanup.message : undefined,
+  };
+}
+
+function hasUnfinishedArchive(thread: ThreadChannel, confirmation: Message): boolean {
+  // Discord updates the archive timestamp on every archive and unarchive. A thread
+  // that closed and was later reopened has a newer timestamp than the confirmation.
+  return thread.archived === false && thread.archiveTimestamp !== null
+    && thread.archiveTimestamp < confirmation.createdTimestamp;
+}
+
+async function retryConfirmationArchive(
+  guild: Guild,
+  forum: ForumChannel,
+  thread: ThreadChannel,
+  confirmation: Message,
+  botUserId: string,
+): Promise<boolean> {
+  // Leave caching enabled so discord.js updates any existing cached channel with the REST response.
+  const current = await guild.channels.fetch(thread.id, { force: true });
+  if (current?.type !== ChannelType.PublicThread || current.parentId !== forum.id
+    || current.flags?.has(ChannelFlags.Pinned) || !hasUnfinishedArchive(current, confirmation)) {
+    return false;
+  }
+
+  const latest = await current.messages.fetch({ limit: 1, cache: false });
+  const message = latest.get(confirmation.id);
+  if (!message || classifyForumBotMessage(message, botUserId) !== 'confirm') return false;
+
+  try {
+    await current.setArchived(true, '削除確認メッセージ送信後の自動クローズ（再試行）');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to retry archive after confirmation: ${detail}`, { cause: error });
+  }
+  return true;
 }
 
 /**
@@ -255,7 +292,7 @@ async function sendConfirmationToThread(
   lastPostDate: Date,
   elapsedDays: number,
   thresholdDays: number
-): Promise<void> {
+) {
   const confirmButton = new ButtonBuilder()
     .setCustomId(FORUM_BUTTON_IDS.CONFIRM_DELETE)
     .setLabel('🗑️ 承認して削除する')
@@ -272,7 +309,7 @@ async function sendConfirmationToThread(
   );
 
   const lastPostDateStr = formatJSTDateSlash(lastPostDate);
-  await withTemporaryThreadUnarchive(thread, {
+  return withTemporaryThreadUnarchive(thread, {
     openReason: '削除確認メッセージ送信のためアーカイブ一時解除',
     closeReason: '削除確認メッセージ送信後の自動クローズ',
     afterSuccess: 'archive',
@@ -395,7 +432,7 @@ export async function runForumCleanupForGuild(
       }
 
       try {
-        const { lastPostDate, alreadyConfirmed } = await inspectThreadActivity(
+        const { lastPostDate, alreadyConfirmed, latestConfirmation } = await inspectThreadActivity(
           thread,
           botUserId,
           thresholdDays,
@@ -427,19 +464,33 @@ export async function runForumCleanupForGuild(
 
         if (alreadyConfirmed) {
           result.skippedAlreadyConfirmedCount++;
+          if (botUserId && latestConfirmation && hasUnfinishedArchive(thread, latestConfirmation)) {
+            const archived = await retryConfirmationArchive(
+              guild, forum, thread, latestConfirmation, botUserId
+            );
+            if (archived) await sleep(actionDelayMs);
+          }
           continue;
         }
 
-        await sendConfirmationToThread(thread, lastPostDate, elapsedDays, thresholdDays);
+        const archiveFailure = await sendConfirmationToThread(thread, lastPostDate, elapsedDays, thresholdDays);
         result.confirmSentThreads.push(target);
+        if (archiveFailure) {
+          const { error } = archiveFailure;
+          const detail = error instanceof Error ? error.message : String(error);
+          result.errors.push(
+            `Failed to archive thread #${thread.name} (${thread.id}) in #${forum.name} (${forum.id}) after confirmation: ${detail}`
+          );
+        }
         console.log(
           `[ForumManager] Sent confirmation to forum thread #${thread.name} in #${forum.name} (${elapsedDays} days inactive)`
         );
 
         await sleep(actionDelayMs);
-      } catch (threadErr: any) {
-        const errMsg = `Failed to process thread #${thread.name} in #${forum.name}: ${threadErr.message ?? threadErr}`;
-        console.error(`[ForumManager] ${errMsg}`, threadErr);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const errMsg = `Failed to process thread #${thread.name} (${thread.id}) in #${forum.name} (${forum.id}): ${detail}`;
+        console.error(`[ForumManager] ${errMsg}`, error);
         result.errors.push(errMsg);
       }
     }
