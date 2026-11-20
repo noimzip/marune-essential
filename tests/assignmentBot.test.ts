@@ -66,6 +66,8 @@ function mockDiscord(existingToday = false, existingTopic: string | null = null,
       type: ChannelType.GuildText, parentId: 'category', name: '使い捨て会話_11月18日', send: pastSend,
       topic: pastPending ? 'WebClass 課題一覧（2026/11/18・投稿待ち）' : null,
       createdAt: new Date('2026-11-17T15:00:00.000Z'),
+      permissionsFor: () => ({ has: () => true }),
+      messages: { fetch: vi.fn().mockResolvedValue(new Collection()) },
     }],
   ]);
   if (existingToday) channels.set(today.id, today);
@@ -79,7 +81,7 @@ function mockDiscord(existingToday = false, existingTopic: string | null = null,
     guilds: {
       fetch: async () => ({
         id: 'guild',
-        members: { me: { permissions: { has: () => true } } },
+        members: { me: { id: 'bot', permissions: { has: () => true } } },
         channels: { fetch: async () => channels, create },
       }),
     },

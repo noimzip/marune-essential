@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ChannelType, MessageFlags, PermissionFlagsBits, type Guild } from 'discord.js';
+import { ChannelType, Collection, MessageFlags, PermissionFlagsBits, type Guild, type MessageCreateOptions } from 'discord.js';
 import { runLifecycleForGuild, BUTTON_IDS } from '../src/services/channelManager.js';
+
+const emptyHistory = () => ({
+  permissionsFor: () => ({ has: (perm: bigint) => perm === PermissionFlagsBits.ReadMessageHistory }),
+  messages: { fetch: vi.fn().mockResolvedValue(new Collection()) },
+});
 
 describe('channelManager (runLifecycleForGuild)', () => {
   const categoryId = 'cat-123';
@@ -100,6 +105,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       type: ChannelType.GuildText,
       send: mockSend,
       delete: mockDelete,
+      ...emptyHistory(),
     };
 
     const pastChannel3Days = {
@@ -109,6 +115,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       type: ChannelType.GuildText,
       send: mockSend,
       delete: mockDelete,
+      ...emptyHistory(),
     };
 
     const pastChannel7Days = {
@@ -154,6 +161,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       id: 'guild-1',
       members: {
         me: {
+          id: 'bot',
           permissions: {
             has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
           },
@@ -270,6 +278,96 @@ describe('channelManager (runLifecycleForGuild)', () => {
       expect.stringContaining('Discord connection failed'),
       expect.stringContaining('the bot lacks permission'),
     ]);
+  });
+
+  describe('deletion confirmation history', () => {
+    interface HistoryMessage {
+      id: string;
+      author: { id: string };
+      createdTimestamp: number;
+      content: string;
+    }
+
+    function makeHistoryFixture() {
+      const messages = new Collection<string, HistoryMessage>();
+      const readHistory = vi.fn(async (_options: { before?: string }) => messages);
+      const canReadHistory = vi.fn(() => true);
+      const channel = {
+        id: 'past',
+        name: '使い捨て会話_11月11日',
+        parentId: categoryId,
+        type: ChannelType.GuildText,
+        createdAt: new Date('2026-11-11T00:00:00+09:00'),
+        permissionsFor: () => ({ has: canReadHistory }),
+        messages: { fetch: readHistory },
+        send: vi.fn<(message: MessageCreateOptions) => Promise<void>>(async ({ content }) => {
+          messages.set('notice', {
+            id: 'notice', author: { id: 'bot' }, createdTimestamp: refDate.getTime(), content: content ?? '',
+          });
+        }),
+      };
+      const guild = {
+        id: 'confirmation-history-test',
+        members: { me: { id: 'bot', permissions: { has: () => true } } },
+        channels: {
+          fetch: vi.fn().mockResolvedValue(new Map<string, object>([
+            [categoryId, { type: ChannelType.GuildCategory }],
+            [channel.id, channel],
+          ])),
+          create: vi.fn().mockResolvedValue({ send: vi.fn() }),
+        },
+      } as unknown as Guild;
+      return { guild, channel, messages, readHistory, canReadHistory };
+    }
+
+    it('retries a failed send on the same day and sends another confirmation on the next JST day', async () => {
+      const { guild, channel } = makeHistoryFixture();
+      channel.send.mockRejectedValueOnce(new Error('temporary send failure'));
+      const failed = await runLifecycleForGuild(guild, categoryId, refDate);
+      expect(failed.confirmSentChannels).toEqual([]);
+      expect(failed.errors).toEqual([expect.stringContaining('temporary send failure')]);
+
+      const retried = await runLifecycleForGuild(guild, categoryId, refDate);
+      expect(retried.confirmSentChannels).toEqual([channel.name]);
+
+      const nextJSTDay = new Date('2026-11-12T15:00:00Z');
+      const next = await runLifecycleForGuild(guild, categoryId, nextJSTDay);
+      expect(next.confirmSentChannels).toEqual([channel.name]);
+      expect(channel.send).toHaveBeenCalledTimes(3);
+      expect(channel.send).toHaveBeenLastCalledWith(expect.objectContaining({ content: expect.stringContaining('**2日**') }));
+    });
+
+    it('paginates recent posts to find an existing bot confirmation from today', async () => {
+      const { guild, channel, messages, readHistory } = makeHistoryFixture();
+      const currentDay = new Date('2026-11-11T15:00:00Z');
+      const heading = '⚠️ **【使い捨てチャンネル削除確認】**';
+      const newMessages = new Collection<string, HistoryMessage>();
+      for (let id = 201; id >= 102; id -= 1) {
+        newMessages.set(String(id), {
+          id: String(id), author: { id: 'member' }, createdTimestamp: refDate.getTime(), content: heading,
+        });
+      }
+      messages.set('101', { id: '101', author: { id: 'bot' }, createdTimestamp: currentDay.getTime(), content: heading });
+      readHistory.mockResolvedValueOnce(newMessages);
+
+      const result = await runLifecycleForGuild(guild, categoryId, refDate);
+
+      expect(readHistory).toHaveBeenNthCalledWith(2, { before: '102', limit: 100, cache: false });
+      expect(result.confirmSentChannels).toEqual([]);
+      expect(result.skippedChannels).toContain(channel.name);
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it('reports inaccessible history and avoids an unverified duplicate send', async () => {
+      const { guild, channel, readHistory, canReadHistory } = makeHistoryFixture();
+      canReadHistory.mockReturnValue(false);
+
+      const result = await runLifecycleForGuild(guild, categoryId, refDate);
+
+      expect(result.errors).toEqual([expect.stringContaining('Read Message History')]);
+      expect(readHistory).not.toHaveBeenCalled();
+      expect(channel.send).not.toHaveBeenCalled();
+    });
   });
 
   it('skips channel creation if today channel already exists', async () => {

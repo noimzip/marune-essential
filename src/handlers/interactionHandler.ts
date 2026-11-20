@@ -10,7 +10,7 @@ import {
 } from 'discord.js';
 import { getConfig, parseExcludedForumIds } from '../config.js';
 import { calculateDiffDays } from '../utils/dateUtils.js';
-import { BUTTON_IDS } from '../services/channelManager.js';
+import { BUTTON_IDS, DISPOSABLE_POSTPONE_MARKER } from '../services/channelManager.js';
 import {
   FORUM_BUTTON_IDS,
   FORUM_KEEP_MARKER,
@@ -103,7 +103,7 @@ async function handleDisposableChannelButton(
   if (customId === BUTTON_IDS.CANCEL_DELETE) {
     try {
       await interaction.update({
-        content: `⏸️ チャンネルの削除は保留されました。(担当者: <@${interaction.user.id}>)`,
+        content: `${DISPOSABLE_POSTPONE_MARKER}(担当者: <@${interaction.user.id}>)`,
         components: [],
         allowedMentions: { parse: [] },
       });

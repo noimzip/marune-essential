@@ -8,16 +8,22 @@ import {
   RESTJSONErrorCodes,
   type Client,
   type Guild,
+  type GuildMember,
   type TextChannel,
 } from 'discord.js';
 import { getConfig } from '../config.js';
 import { runExclusiveBatch } from '../utils/batchExecution.js';
-import { calculateDiffDays, formatChannelName } from '../utils/dateUtils.js';
+import { calculateDiffDays, formatChannelName, getJSTParts } from '../utils/dateUtils.js';
 
 export const BUTTON_IDS = {
   CONFIRM_DELETE: 'disposable_channel_delete_confirm',
   CANCEL_DELETE: 'disposable_channel_delete_cancel',
 } as const;
+
+const DELETE_CONFIRM_HEADING = '⚠️ **【使い捨てチャンネル削除確認】**';
+export const DISPOSABLE_POSTPONE_MARKER = '⏸️ チャンネルの削除は保留されました。';
+const MESSAGE_PAGE_SIZE = 100;
+const JST_OFFSET_HOURS = 9;
 
 export interface LifecycleResult {
   created: boolean;
@@ -36,6 +42,33 @@ interface LifecycleOptions {
 
 function dailyBatchKey(guildId: string): string {
   return `daily-lifecycle:${guildId}`;
+}
+
+async function hasDailyDeletionNotice(
+  channel: TextChannel,
+  botMember: GuildMember,
+  dayStart: number,
+  nextDayStart: number,
+): Promise<boolean> {
+  // Discord can return an empty history when the permission is missing.
+  if (!channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ReadMessageHistory)) {
+    throw new Error('Read Message History is required to check for an existing deletion confirmation.');
+  }
+
+  let before: string | undefined;
+  while (true) {
+    const messages = await channel.messages.fetch({ before, limit: MESSAGE_PAGE_SIZE, cache: false });
+    if (messages.some(({ author, createdTimestamp, content }) => author.id === botMember.id
+      && createdTimestamp >= dayStart && createdTimestamp < nextDayStart
+      && (content.startsWith(DELETE_CONFIRM_HEADING) || content.startsWith(DISPOSABLE_POSTPONE_MARKER)))) {
+      return true;
+    }
+
+    const oldest = messages.last();
+    if (!oldest || oldest.createdTimestamp < dayStart || messages.size < MESSAGE_PAGE_SIZE) return false;
+    if (oldest.id === before) throw new Error('Discord did not advance the message history cursor.');
+    before = oldest.id;
+  }
 }
 
 async function deleteExpiredChannel(
@@ -218,6 +251,10 @@ async function executeDailyLifecycle(
     console.log(`[ChannelManager] Today channel #${existingToday.channel.name} already exists, skipping creation.`);
   }
 
+  const { year, month, day } = getJSTParts(referenceDate);
+  const dayStart = Date.UTC(year, month - 1, day, -JST_OFFSET_HOURS);
+  const nextDayStart = Date.UTC(year, month - 1, day + 1, -JST_OFFSET_HOURS);
+
   // 2. Iterate through channels in category and manage past disposable channels
   for (const { channel, diffDays } of targetChannels) {
     // Skip channels not matching naming scheme or created today / future
@@ -235,6 +272,11 @@ async function executeDailyLifecycle(
     // 1-6 days old: Send deletion confirmation message
     if (diffDays >= 1 && diffDays < 7) {
       try {
+        if (await hasDailyDeletionNotice(channel, botMember, dayStart, nextDayStart)) {
+          result.skippedChannels.push(channel.name);
+          continue;
+        }
+
         const confirmButton = new ButtonBuilder()
           .setCustomId(BUTTON_IDS.CONFIRM_DELETE)
           .setLabel('🗑️ チャンネルを削除する')
@@ -252,7 +294,7 @@ async function executeDailyLifecycle(
 
         await channel.send({
           content:
-            `⚠️ **【使い捨てチャンネル削除確認】**\n` +
+            `${DELETE_CONFIRM_HEADING}\n` +
             `このチャンネル（#${channel.name}）は作成から **${diffDays}日** が経過しています。\n` +
             `手動で削除したい場合は下のボタンを押してください。\n` +
             `*(※作成から7日経過すると自動削除されます。実行には「チャンネルの管理」権限が必要です)*`,
@@ -264,9 +306,10 @@ async function executeDailyLifecycle(
           `[ChannelManager] Sent deletion confirmation to #${channel.name} (${diffDays} days old)`
         );
         result.confirmSentChannels.push(channel.name);
-      } catch (err: any) {
-        const errMsg = `Failed to send confirmation message to #${channel.name}: ${err.message}`;
-        console.error(`[ChannelManager] ${errMsg}`, err);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const errMsg = `Failed to check or send a confirmation message for #${channel.name}: ${reason}`;
+        console.error(`[ChannelManager] ${errMsg}`, error);
         result.errors.push(errMsg);
       }
     }
