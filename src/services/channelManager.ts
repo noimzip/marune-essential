@@ -3,11 +3,12 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
-  Client,
-  Guild,
   MessageFlags,
   PermissionFlagsBits,
-  TextChannel,
+  RESTJSONErrorCodes,
+  type Client,
+  type Guild,
+  type TextChannel,
 } from 'discord.js';
 import { getConfig } from '../config.js';
 import { runExclusiveBatch } from '../utils/batchExecution.js';
@@ -35,6 +36,54 @@ interface LifecycleOptions {
 
 function dailyBatchKey(guildId: string): string {
   return `daily-lifecycle:${guildId}`;
+}
+
+async function deleteExpiredChannel(
+  guild: Guild,
+  channel: TextChannel,
+  categoryId: string,
+  referenceDate: Date,
+  result: LifecycleResult,
+): Promise<void> {
+  const { id, name } = channel;
+  const skip = (reason: string) => {
+    console.warn(`[ChannelManager] Skipping automatic deletion of #${name} (${id}): ${reason}`);
+    result.skippedChannels.push(name);
+  };
+
+  try {
+    // A forced fetch with caching enabled updates any existing discord.js channel instance.
+    const current = await guild.channels.fetch(id, { force: true });
+    if (!current) {
+      skip('the current channel could not be found');
+      return;
+    }
+    if (current.type !== ChannelType.GuildText || current.parentId !== categoryId) {
+      skip(`the channel type (${ChannelType[current.type]}) or category (${current.parentId ?? 'none'}) is outside the managed criteria`);
+      return;
+    }
+    const age = current.createdAt ? calculateDiffDays(current.name, referenceDate, current.createdAt) : null;
+    if (age === null || age < 7) {
+      skip(`the current name #${current.name} and creation date do not identify a channel at least seven days old`);
+      return;
+    }
+
+    console.log(`[ChannelManager] Channel #${current.name} is ${age} days old (>= 7). Deleting...`);
+    await current.delete(`作成から7日経過による自動削除 (${age}日経過)`);
+    result.deletedChannels.push(current.name);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    if (code === RESTJSONErrorCodes.UnknownChannel) {
+      skip('the channel was already deleted');
+      return;
+    }
+
+    const reason = code === RESTJSONErrorCodes.MissingPermissions
+      ? 'the bot lacks permission to verify or delete the channel'
+      : error instanceof Error ? error.message : String(error);
+    skip(reason);
+    result.errors.push(`Automatic deletion failed for #${name} (${id}): ${reason}`);
+  }
 }
 
 /**
@@ -179,17 +228,7 @@ async function executeDailyLifecycle(
 
     // 7+ days old: Automatic deletion
     if (diffDays >= 7) {
-      try {
-        console.log(
-          `[ChannelManager] Channel #${channel.name} is ${diffDays} days old (>= 7). Deleting...`
-        );
-        await channel.delete(`作成から7日経過による自動削除 (${diffDays}日経過)`);
-        result.deletedChannels.push(channel.name);
-      } catch (err: any) {
-        const errMsg = `Failed to delete #${channel.name}: ${err.message}`;
-        console.error(`[ChannelManager] ${errMsg}`, err);
-        result.errors.push(errMsg);
-      }
+      await deleteExpiredChannel(guild, channel, categoryId, referenceDate, result);
       continue;
     }
 

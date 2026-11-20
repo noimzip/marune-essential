@@ -116,6 +116,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       name: '使い捨て会話_11月05日', // 7 days ago
       parentId: categoryId,
       type: ChannelType.GuildText,
+      createdAt: new Date('2026-11-05T00:00:00+09:00'),
       send: mockSend,
       delete: mockDelete,
     };
@@ -125,6 +126,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
       name: '使い捨て会話_11月02日', // 10 days ago
       parentId: categoryId,
       type: ChannelType.GuildText,
+      createdAt: new Date('2026-11-02T00:00:00+09:00'),
       send: mockSend,
       delete: mockDelete,
     };
@@ -158,7 +160,7 @@ describe('channelManager (runLifecycleForGuild)', () => {
         },
       },
       channels: {
-        fetch: vi.fn().mockResolvedValue(channelsMap),
+        fetch: vi.fn(async (id?: string) => id ? channelsMap.get(id) ?? null : channelsMap),
         create: mockChannelCreate,
       },
     };
@@ -204,6 +206,70 @@ describe('channelManager (runLifecycleForGuild)', () => {
 
     // 4. Skipped unrelated channel
     expect(result.skippedChannels).toContain('general-chat');
+  });
+
+  it('skips old channels moved, renamed, changed or unavailable since the snapshot and deletes a fresh match', async () => {
+    const oldChannel = (id: string) => ({
+      id,
+      name: '使い捨て会話_11月04日',
+      parentId: categoryId,
+      type: ChannelType.GuildText,
+      createdAt: new Date('2026-11-04T00:00:00+09:00'),
+      delete: vi.fn(),
+    });
+    const moved = oldChannel('moved');
+    const renamed = oldChannel('renamed');
+    const repurposed = oldChannel('repurposed');
+    const missing = oldChannel('missing');
+    const alreadyDeleted = oldChannel('already-deleted');
+    const failed = oldChannel('failed');
+    const forbidden = oldChannel('forbidden');
+    const unchanged = oldChannel('unchanged');
+    const candidates = [moved, renamed, repurposed, missing, alreadyDeleted, failed, forbidden, unchanged];
+    const snapshot = new Map<string, object>([
+      [categoryId, { type: ChannelType.GuildCategory }],
+      ...candidates.map((channel): [string, object] => [channel.id, channel]),
+    ]);
+    const refreshed = new Map<string, object>();
+    const current = { ...unchanged, name: '使い捨て会話-11月5日', delete: vi.fn() };
+    const forbiddenDelete = vi.fn().mockRejectedValue({ code: 50013 });
+    const fetch = vi.fn(async (id?: string) => {
+      if (!id) return snapshot;
+      if (id === failed.id) throw new Error('Discord connection failed');
+      if (id === alreadyDeleted.id) throw { code: 10003 };
+      return refreshed.get(id) ?? null;
+    });
+    const guild = {
+      id: 'fresh-delete-test',
+      members: { me: { permissions: { has: () => true } } },
+      channels: {
+        fetch,
+        create: vi.fn().mockResolvedValue({
+          send: async () => {
+            refreshed.set(moved.id, { ...moved, parentId: 'outside' });
+            refreshed.set(renamed.id, { ...renamed, name: '使い捨て会話_11月10日' });
+            refreshed.set(repurposed.id, { ...repurposed, type: ChannelType.GuildAnnouncement });
+            refreshed.set(forbidden.id, { ...forbidden, delete: forbiddenDelete });
+            refreshed.set(unchanged.id, current);
+          },
+        }),
+      },
+    };
+
+    const result = await runLifecycleForGuild(guild as unknown as Guild, categoryId, refDate);
+
+    for (const channel of candidates) {
+      expect(fetch).toHaveBeenCalledWith(channel.id, { force: true });
+      expect(channel.delete).not.toHaveBeenCalled();
+    }
+    expect(forbiddenDelete).toHaveBeenCalledOnce();
+    expect(current.delete).toHaveBeenCalledExactlyOnceWith('作成から7日経過による自動削除 (7日経過)');
+    expect(result.deletedChannels).toEqual([current.name]);
+    expect(result.skippedChannels).toHaveLength(7);
+    expect(result.errors).toEqual([
+      expect.stringContaining('Discord connection failed'),
+      expect.stringContaining('the bot lacks permission'),
+    ]);
   });
 
   it('skips channel creation if today channel already exists', async () => {
@@ -274,10 +340,11 @@ describe('channelManager (runLifecycleForGuild)', () => {
         id: 'date-test-guild',
         members: { me: { permissions: { has: () => true } } },
         channels: {
-          fetch: vi.fn().mockResolvedValue(new Map<string, object>([
-            [categoryId, { id: categoryId, type: ChannelType.GuildCategory }],
-            ...channels.map((channel): [string, object] => [channel.id, channel]),
-          ])),
+          fetch: vi.fn(async (id?: string) => id ? channels.find((channel) => channel.id === id) ?? null
+            : new Map<string, object>([
+              [categoryId, { id: categoryId, type: ChannelType.GuildCategory }],
+              ...channels.map((channel): [string, object] => [channel.id, channel]),
+            ])),
           create: vi.fn().mockResolvedValue(createdChannel),
         },
       };
