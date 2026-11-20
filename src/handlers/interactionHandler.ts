@@ -19,7 +19,7 @@ import {
 import { withTemporaryThreadUnarchive } from '../services/forumThreadArchive.js';
 import { handleDailyBatchRun } from '../commands/dailyBatchRun.js';
 import { handleKadai } from '../commands/kadai.js';
-import { handleTestForumCleanup } from '../commands/testForumCleanup.js';
+import { forumCleanupStatusCommand, handleForumCleanupStatus, handleTestForumCleanup } from '../commands/testForumCleanup.js';
 
 const ALL_MANAGED_BUTTON_IDS = new Set<string>([
   BUTTON_IDS.CONFIRM_DELETE,
@@ -259,6 +259,8 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
         await handleDailyBatchRun(interaction);
       } else if (interaction.commandName === 'test_forum_cleanup') {
         await handleTestForumCleanup(interaction);
+      } else if (interaction.commandName === forumCleanupStatusCommand.name) {
+        await handleForumCleanupStatus(interaction);
       } else if (interaction.commandName === 'kadai') {
         await handleKadai(interaction);
       }

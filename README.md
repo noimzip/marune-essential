@@ -24,6 +24,7 @@ Discordサーバー内の指定カテゴリにおいて、日替わりの雑談�
    - Botがチャンネル／スレッドへ送信するメッセージはすべてサイレント送信（`MessageFlags.SuppressNotifications`）となり、通知音やプッシュ通知は発生しません。
    - Bot自身が送信した確認/見送りメッセージは最終投稿判定から除外。
    - テスト用スラッシュコマンド `/test_forum_cleanup [days] [dry_run]` で基準日数やドライランを指定して検証可能。
+   - 検査の受付時に実行IDを返します。実行者は「チャンネルの管理」権限があれば、同じサーバーで `/forum_cleanup_status run_id:<実行ID>` を使って実行状態と結果を確認できます。結果は Bot のメモリに保存され、完了から24時間または Bot の再起動まで参照できます。
 6. **クラウド常時稼働対応 (24/7)**
    - 死活監視エンドポイント `/healthz`（HTTP 200/503 & ステータスJSON返却）を内蔵。
    - Dockerマルチステージビルド・軽量Alpineイメージ。
@@ -185,7 +186,7 @@ marune-essential/
 │   │   └── interactionHandler.ts # スラッシュコマンド・ボタンインタラクション処理
 │   ├── commands/
 │   │   ├── dailyBatchRun.ts    # /daily-batch-run コマンド定義
-│   │   └── testForumCleanup.ts # /test_forum_cleanup コマンド定義
+│   │   └── testForumCleanup.ts # フォーラム検査と結果確認のコマンド定義
 │   └── utils/
 │       └── dateUtils.ts        # JST日付処理・差分日数判定・年跨ぎ/うるう年対応
 └── tests/

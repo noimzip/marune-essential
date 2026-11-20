@@ -45,10 +45,14 @@ export async function replyToBatchFailure(
   interaction: ChatInputCommandInteraction,
   error: unknown
 ): Promise<void> {
+  const content = describeBatchFailure(interaction.commandName, error);
+  await interaction.editReply({ content: content.slice(0, MAX_MESSAGE_LENGTH), allowedMentions: { parse: [] } });
+}
+
+export function describeBatchFailure(commandName: string, error: unknown): string {
   const running = error instanceof BatchAlreadyRunningError;
-  if (!running) console.error(`[Command:${interaction.commandName}] Batch failed:`, error);
-  const content = running
+  if (!running) console.error(`[Command:${commandName}] Batch failed:`, error);
+  return running
     ? 'このバッチはすでに実行中です。完了後に再実行してください。'
     : `⚠️ バッチ実行中にエラーが発生しました: ${error instanceof Error ? error.message : String(error)}`;
-  await interaction.editReply({ content: content.slice(0, MAX_MESSAGE_LENGTH), allowedMentions: { parse: [] } });
 }

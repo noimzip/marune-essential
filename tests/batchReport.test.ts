@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AttachmentPayload, ChatInputCommandInteraction, InteractionEditReplyOptions } from 'discord.js';
 import { handleDailyBatchRun } from '../src/commands/dailyBatchRun.js';
 import { handleTestForumCleanup } from '../src/commands/testForumCleanup.js';
+import { configSchema, setConfig } from '../src/config.js';
 import * as channelManager from '../src/services/channelManager.js';
 import * as forumManager from '../src/services/forumManager.js';
 
@@ -10,9 +11,14 @@ afterEach(() => vi.restoreAllMocks());
 function mockInteraction(commandName: string) {
   const editReply = vi.fn<(options: InteractionEditReplyOptions) => Promise<void>>().mockResolvedValue(undefined);
   const interaction = {
+    id: 'batch-report-interaction',
+    guildId: 'guild',
+    user: { id: 'admin' },
+    createdTimestamp: Date.now(),
     commandName,
     client: {},
     memberPermissions: { has: () => true },
+    reply: vi.fn().mockResolvedValue(undefined),
     deferReply: vi.fn().mockResolvedValue(undefined),
     editReply,
     options: { getInteger: () => 21, getBoolean: () => true },
@@ -54,6 +60,7 @@ describe('admin command report delivery', () => {
   });
 
   it('keeps forum counts visible and includes all errors in its long report', async () => {
+    setConfig(configSchema.parse({ DISCORD_TOKEN: 'test', GUILD_ID: 'guild', CATEGORY_ID: 'category' }));
     const targets = Array.from({ length: 30 }, (_, i) => ({
       forumId: 'forum',
       forumName: 'フォーラム',

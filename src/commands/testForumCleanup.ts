@@ -1,5 +1,6 @@
 import {
-  ChatInputCommandInteraction,
+  type ChatInputCommandInteraction,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
@@ -8,7 +9,20 @@ import {
   runForumCleanup,
   type ForumCleanupResult,
 } from '../services/forumManager.js';
-import { replyToBatchFailure, sendBatchReport, type BatchReport } from './batchReport.js';
+import { describeBatchFailure, sendBatchReport, type BatchReport } from './batchReport.js';
+
+const INTERACTION_TOKEN_LIFETIME_MS = 15 * 60 * 1000;
+const RESULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const REPORT_FILENAME = 'forum-cleanup-report.txt';
+const RUN_ID_OPTION = 'run_id';
+
+interface ForumCleanupRun {
+  guildId: string;
+  userId: string;
+  report?: BatchReport;
+}
+
+const forumCleanupRuns = new Map<string, ForumCleanupRun>();
 
 export const testForumCleanupCommand = new SlashCommandBuilder()
   .setName('test_forum_cleanup')
@@ -30,10 +44,21 @@ export const testForumCleanupCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
 
+export const forumCleanupStatusCommand = new SlashCommandBuilder()
+  .setName('forum_cleanup_status')
+  .setDescription('フォーラム検査の実行状態や結果を確認します')
+  .addStringOption((option) =>
+    option
+      .setName(RUN_ID_OPTION)
+      .setDescription('検査開始時に表示された実行ID')
+      .setRequired(true)
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels);
+
 function formatForumCleanupReport(result: ForumCleanupResult): BatchReport {
   const modeLabel = result.dryRun
-    ? '🧪 ドライラン（送信なし）'
-    : '📨 テスト実行（確認メッセージ送信）';
+    ? '🧪 フォーラム検査完了（ドライラン）'
+    : '✅ フォーラム検査完了（確認メッセージ送信）';
 
   const summary = [
     `**${modeLabel}** (基準: **${result.thresholdDays}日以上**未更新)`,
@@ -62,7 +87,7 @@ function formatForumCleanupReport(result: ForumCleanupResult): BatchReport {
           : ''
         : sentThreadIds.has(target.threadId)
         ? ' [送信完了]'
-        : ' [スキップ]';
+        : ' [確認送信なし]';
 
       details.push(`- \`#${target.forumName}\` / **${target.threadName}** (最終投稿: ${target.lastPostDateStr}・${target.elapsedDays}日経過)${statusTag}`);
     }
@@ -74,45 +99,99 @@ function formatForumCleanupReport(result: ForumCleanupResult): BatchReport {
     details.push('\n⚠️ **エラー詳細**', ...result.errors.map((error) => `- ${error}`));
   }
 
-  return { summary, details, filename: 'forum-cleanup-report.txt' };
+  return { summary, details, filename: REPORT_FILENAME };
+}
+
+async function getAuthorizedGuildId(
+  interaction: ChatInputCommandInteraction
+): Promise<string | null> {
+  if (interaction.guildId && interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+    return interaction.guildId;
+  }
+  await interaction.reply({
+    content: '❌ このコマンドを実行するには「チャンネルの管理」権限が必要です。',
+    flags: MessageFlags.Ephemeral,
+  });
+  return null;
 }
 
 export async function handleTestForumCleanup(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
-  const memberPermissions = interaction.memberPermissions;
-  if (!memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+  const guildId = await getAuthorizedGuildId(interaction);
+  if (!guildId) return;
+
+  const config = getConfig();
+  if (guildId !== config.GUILD_ID) {
     await interaction.reply({
-      content: '❌ このコマンドを実行するには「チャンネルの管理」権限が必要です。',
-      ephemeral: true,
+      content: 'このサーバーではフォーラム検査を実行できません。',
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  const defaultDays = (() => {
-    try {
-      return getConfig().FORUM_INACTIVE_DAYS;
-    } catch {
-      return 21;
-    }
-  })();
-
-  const days = interaction.options.getInteger('days') ?? defaultDays;
+  const days = interaction.options.getInteger('days') ?? config.FORUM_INACTIVE_DAYS;
   const dryRun = interaction.options.getBoolean('dry_run') ?? true;
+  const runId = interaction.id;
+  const statusHint = `状態と結果は \`/${forumCleanupStatusCommand.name} ${RUN_ID_OPTION}:${runId}\` で確認できます。`;
+  const run: ForumCleanupRun = { guildId, userId: interaction.user.id };
+  forumCleanupRuns.set(runId, run);
 
-  await interaction.deferReply({ ephemeral: true });
-
-  let result: ForumCleanupResult;
   try {
-    result = await runForumCleanup(interaction.client, {
-      days,
-      dryRun,
+    await interaction.reply({
+      content: `フォーラム検査を開始しました。\n${statusHint}`,
+      flags: MessageFlags.Ephemeral,
     });
-
   } catch (error) {
-    await replyToBatchFailure(interaction, error);
+    forumCleanupRuns.delete(runId);
+    throw error;
+  }
+
+  let report: BatchReport;
+  try {
+    const result = await runForumCleanup(interaction.client, { days, dryRun });
+    report = formatForumCleanupReport(result);
+  } catch (error) {
+    report = {
+      summary: ['**フォーラム検査の実行に失敗しました**'],
+      details: [describeBatchFailure(interaction.commandName, error)],
+      filename: REPORT_FILENAME,
+    };
+  }
+
+  report.summary.push(statusHint);
+  run.report = report;
+  setTimeout(() => forumCleanupRuns.delete(runId), RESULT_RETENTION_MS).unref();
+
+  if (Date.now() - interaction.createdTimestamp < INTERACTION_TOKEN_LIFETIME_MS) {
+    await sendBatchReport(interaction, report);
+  }
+}
+
+export async function handleForumCleanupStatus(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const guildId = await getAuthorizedGuildId(interaction);
+  if (!guildId) return;
+
+  const runId = interaction.options.getString(RUN_ID_OPTION, true).trim();
+  const run = forumCleanupRuns.get(runId);
+  if (run?.guildId !== guildId || run.userId !== interaction.user.id) {
+    await interaction.reply({
+      content: '指定された実行IDの検査が見つかりませんでした。',
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 
-  await sendBatchReport(interaction, formatForumCleanupReport(result));
+  if (!run.report) {
+    await interaction.reply({
+      content: 'フォーラム検査は実行中です。時間をおいて再度確認してください。',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await sendBatchReport(interaction, run.report);
 }

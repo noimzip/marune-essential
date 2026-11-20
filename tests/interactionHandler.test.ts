@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { ChannelFlags, ChannelFlagsBitField, ChannelType, Collection, type Interaction, PermissionFlagsBits } from 'discord.js';
+import { ChannelFlags, ChannelFlagsBitField, ChannelType, Collection, type Interaction, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { configSchema, setConfig } from '../src/config.js';
 import { formatChannelName } from '../src/utils/dateUtils.js';
 import { handleInteraction } from '../src/handlers/interactionHandler.js';
@@ -252,6 +252,7 @@ describe('interactionHandler', () => {
         isChatInputCommand: () => true,
         isButton: () => false,
         commandName: 'test_forum_cleanup',
+        guildId,
         memberPermissions: {
           has: vi.fn().mockReturnValue(false),
         },
@@ -263,7 +264,7 @@ describe('interactionHandler', () => {
       expect(mockInteraction.reply).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining('「チャンネルの管理」権限が必要です'),
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         })
       );
     });
@@ -301,6 +302,10 @@ describe('interactionHandler', () => {
         isChatInputCommand: () => true,
         isButton: () => false,
         commandName: 'test_forum_cleanup',
+        guildId,
+        id: 'forum-cleanup-test',
+        user: { id: 'moderator' },
+        createdTimestamp: Date.now(),
         memberPermissions: {
           has: (perm: bigint) => perm === PermissionFlagsBits.ManageChannels,
         },
@@ -308,7 +313,7 @@ describe('interactionHandler', () => {
           getInteger: vi.fn().mockReturnValue(5),
           getBoolean: vi.fn().mockReturnValue(true),
         },
-        deferReply: vi.fn().mockResolvedValue({}),
+        reply: vi.fn().mockResolvedValue({}),
         editReply: vi.fn().mockResolvedValue({}),
         client: {},
       };
@@ -319,7 +324,10 @@ describe('interactionHandler', () => {
         days: 5,
         dryRun: true,
       });
-      expect(mockInteraction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+      expect(mockInteraction.reply).toHaveBeenCalledWith({
+        flags: MessageFlags.Ephemeral,
+        content: expect.stringContaining('/forum_cleanup_status run_id:forum-cleanup-test'),
+      });
       expect(mockInteraction.editReply).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining('古いトピック'),

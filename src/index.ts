@@ -9,7 +9,7 @@ import { startDailyScheduler, type DailyScheduler } from './scheduler.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
 import { dailyBatchRunCommand } from './commands/dailyBatchRun.js';
 import { kadaiCommand } from './commands/kadai.js';
-import { testForumCleanupCommand } from './commands/testForumCleanup.js';
+import { forumCleanupStatusCommand, testForumCleanupCommand } from './commands/testForumCleanup.js';
 
 async function main() {
   console.log('[App] Starting Disposable Channels Discord Bot...');
@@ -43,10 +43,11 @@ async function main() {
         await guild.commands.set([
           dailyBatchRunCommand.toJSON(),
           testForumCleanupCommand.toJSON(),
+          forumCleanupStatusCommand.toJSON(),
           kadaiCommand.toJSON(),
         ]);
         console.log(
-          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup, /kadai) in guild '${guild.name}' (${guild.id})`
+          `[App] Successfully registered guild commands (/daily-batch-run, /test_forum_cleanup, /forum_cleanup_status, /kadai) in guild '${guild.name}' (${guild.id})`
         );
       } else {
         console.warn(`[App] Guild ${config.GUILD_ID} not found. Skipping slash command registration.`);
